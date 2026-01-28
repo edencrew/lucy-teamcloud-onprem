@@ -1,0 +1,251 @@
+name: app-stack
+
+services:
+  # -------------------------
+  # TeamCloud Frontend (dummy)
+  # -------------------------
+  teamcloud-fe:
+    image: nginx:1.25-alpine
+    container_name: teamcloud-fe
+    restart: unless-stopped
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-teamcloud-fe"]
+    volumes:
+      - ./teamcloud-fe/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # -------------------------
+  # TeamCloud Backend (dummy)
+  # -------------------------
+  teamcloud-be:
+    image: nginx:1.25-alpine
+    container_name: teamcloud-be
+    restart: unless-stopped
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-teamcloud-be"]
+    volumes:
+      - ./teamcloud-be/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # -------------------------
+  # Auth Frontend (dummy)
+  # -------------------------
+  auth-fe:
+    image: nginx:1.25-alpine
+    container_name: auth-fe
+    restart: unless-stopped
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-auth-fe"]
+    volumes:
+      - ./auth-fe/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # -------------------------
+  # Auth Backend (dummy)
+  # -------------------------
+  auth-be:
+    image: nginx:1.25-alpine
+    container_name: auth-be
+    restart: unless-stopped
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-auth-be"]
+    volumes:
+      - ./auth-be/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # -------------------------
+  # Gitea DB (PostgreSQL)
+  # -------------------------
+  gitea-postgresql:
+    image: postgres:17
+    container_name: gitea-postgresql
+    restart: unless-stopped
+    networks: [teamcloud-internal]
+    env_file: [.env]
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+      POSTGRES_DB: ${GITEA_POSTGRES_DB:-gitea}
+      POSTGRES_USER: ${GITEA_POSTGRES_USER:-gitea}
+      POSTGRES_PASSWORD: ${GITEA_POSTGRES_PASSWORD:-gitea_pw_change_me}
+    volumes:
+      - gitea_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------
+  # Gitea (runtime)
+  # -------------------------
+  gitea:
+    image: docker.gitea.com/gitea:1.25.3
+    container_name: gitea
+    restart: unless-stopped
+    depends_on:
+      gitea-postgresql:
+        condition: service_healthy
+    env_file: [.env]
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+
+      # DB
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: gitea-postgresql:5432
+      GITEA__database__NAME: ${GITEA_POSTGRES_DB:-gitea}
+      GITEA__database__USER: ${GITEA_POSTGRES_USER:-gitea}
+      GITEA__database__PASSWD: ${GITEA_POSTGRES_PASSWORD:-gitea_pw_change_me}
+
+      # 최소한의 reverse proxy 필수값만 런타임에서도 보장(원하면 제거 가능)
+      GITEA__server__DOMAIN: ${GITEA_DOMAIN}
+      GITEA__server__ROOT_URL: ${GITEA_ROOT_URL}
+      GITEA__server__PROTOCOL: "http"
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__SSH_DOMAIN: ${GITEA_DOMAIN}
+
+      GITEA__security__INSTALL_LOCK: "true"
+
+      # 아래 3개를 지정하면 "자동 생성 후 app.ini 저장" 이슈를 줄일 수 있음
+      GITEA__security__SECRET_KEY: ${GITEA_SECRET_KEY}
+      GITEA__security__INTERNAL_TOKEN: ${GITEA_INTERNAL_TOKEN}
+      GITEA__oauth2__JWT_SECRET: ${GITEA_JWT_SECRET}
+
+    volumes:
+      - gitea_data:/data
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-gitea"]
+
+  # -------------------------
+  # App DB (PostgreSQL) - teamcloud/auth용 가정
+  # -------------------------
+  gitea-bootstrap:
+    image: docker.gitea.com/gitea:1.25.3
+    container_name: gitea-bootstrap
+    restart: "no"
+    user: "1000:1000"
+
+    depends_on:
+      gitea:
+        condition: service_started
+      gitea-postgresql:
+        condition: service_healthy
+
+    env_file: [.env]
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: gitea-postgresql:5432
+      GITEA__database__NAME: ${GITEA_POSTGRES_DB:-gitea}
+      GITEA__database__USER: ${GITEA_POSTGRES_USER:-gitea}
+      GITEA__database__PASSWD: ${GITEA_POSTGRES_PASSWORD:-gitea_pw_change_me}
+
+    volumes:
+      - gitea_data:/data
+    networks: [teamcloud-internal]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        set -f
+
+        if [ -z "$${GITEA_ADMIN_USERNAME:-}" ] || [ -z "$${GITEA_ADMIN_PASSWORD:-}" ] || [ -z "$${GITEA_ADMIN_EMAIL:-}" ]; then
+          echo "[bootstrap] admin env missing -> skip"
+          exit 0
+        fi
+
+        CFG="/data/gitea/conf/app.ini"
+
+        echo "[bootstrap] wait for app.ini..."
+        i=0
+        while [ ! -f "$$CFG" ]; do
+          i=$$((i+1))
+          if [ "$$i" -gt 180 ]; then
+            echo "[bootstrap] timeout waiting app.ini"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        echo "[bootstrap] run migrate (ensure tables exist)..."
+        j=0
+        until gitea --config "$$CFG" migrate; do
+          j=$$((j+1))
+          if [ "$$j" -gt 60 ]; then
+            echo "[bootstrap] migrate failed too many times"
+            exit 1
+          fi
+          echo "[bootstrap] migrate failed -> retry in 2s"
+          sleep 2
+        done
+
+        echo "[bootstrap] check admin exists..."
+        if gitea --config "$$CFG" admin user list | awk '{print $$2}' | grep -qx "$${GITEA_ADMIN_USERNAME}"; then
+          echo "[bootstrap] admin exists -> done"
+          exit 0
+        fi
+
+        echo "[bootstrap] creating admin..."
+        gitea --config "$$CFG" admin user create \
+          --admin \
+          --username "$${GITEA_ADMIN_USERNAME}" \
+          --password "$${GITEA_ADMIN_PASSWORD}" \
+          --email "$${GITEA_ADMIN_EMAIL}" \
+          --must-change-password=false
+
+        echo "[bootstrap] done"
+
+
+  # -------------------------
+  # App DB (PostgreSQL) - teamcloud/auth용 가정
+  # -------------------------
+  postgresql:
+    image: postgres:17
+    container_name: app-postgresql
+    restart: unless-stopped
+    networks: [teamcloud-internal]
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app_pw_change_me
+    volumes:
+      - app_pgdata:/var/lib/postgresql/data
+
+  # -------------------------
+  # MQTT Broker (Mosquitto) - WS(9001) 포함
+  # -------------------------
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: mqtt
+    restart: unless-stopped
+    networks:
+      teamcloud-internal: {}
+      tc-transit:
+        aliases: ["teamcloud-network-mqtt"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+networks:
+  teamcloud-internal:
+    name: teamcloud-internal
+    driver: bridge
+
+  tc-transit:
+    external: true
+    name: tc-transit
+
+volumes:
+  gitea_pgdata:
+  gitea_data:
+  app_pgdata:
+  mosquitto_data:
+  mosquitto_log:
