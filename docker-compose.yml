@@ -1,0 +1,119 @@
+networks:
+  internal-network:
+    external: false
+
+services:
+  nginx:
+    image: nginx:1.26-alpine
+    container_name: lucy-gw
+    restart: unless-stopped
+    networks:
+      - internal-network
+    ports:  # 포트매핑 변경시 반드시 .env EXTERNAL_URL 도 반영해 주세요
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
+    depends_on:
+      - db
+      - git
+      - auth-be
+      - auth-fe
+      - tc-be
+      - tc-fe
+
+  git:
+    image: docker.gitea.com/gitea:1.25.3
+    container_name: lucy-git
+    restart: unless-stopped
+    environment:
+      - LUCY_ADMIN_EMAIL=${LUCY_ADMIN_EMAIL}
+      - LUCY_ADMIN_PASSWORD=${LUCY_ADMIN_PASSWORD}
+      - LUCY_ADMIN_NAME=${LUCY_ADMIN_NAME}
+      - EXTERNAL_URL=${EXTERNAL_URL}
+      - USER_UID=${HOST_UID:-1000}
+      - USER_GID=${HOST_GID:-1000}
+      - TZ=${TZ:-UTC}
+      - GITEA__database__USER=${DB_USERNAME}
+      - GITEA__database__PASSWD=${DB_PASSWORD}
+      - GITEA__server__SSH_PORT=2222
+    networks:
+      - internal-network
+    volumes:
+      - ./git/data:/data
+      - ./git/app.ini:/data/gitea/conf/app.ini
+      - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro
+    ports:
+      - "2222:22"  # SSH git
+    entrypoint: ["/bin/sh", "/gitea-entrypoint.sh"]
+
+  db:
+    image: postgres:17
+    container_name: lucy-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD=${DB_ROOT_PASSWORD}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TZ=${TZ:-UTC}
+    networks:
+      - internal-network
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+
+  auth-be:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-be:test
+    container_name: lucy-auth
+    restart: unless-stopped
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      FRONTEND_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_auth
+      ADMIN_EMAIL: ${LUCY_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${LUCY_ADMIN_PASSWORD}
+      ADMIN_NAME: ${LUCY_ADMIN_NAME}
+    networks:
+      - internal-network
+
+  tc-be:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-be:test
+    container_name: lucy-tc
+    restart: unless-stopped
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      FRONTEND_URL: ${EXTERNAL_URL}
+      AUTH_SERVER_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_teamcloud
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
+      GIT_HOST: git
+      GIT_USERNAME: ${GIT_USERNAME}
+      GIT_PASSWORD: ${GIT_PASSWORD}
+      WEBHOOK_URL: "http://lucy-tc/webhooks/gitea"
+    networks:
+      - internal-network
+
+  tc-fe:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-tc-fe:test
+    container_name: lucy-tc-web
+    restart: unless-stopped
+    networks:
+      - internal-network
+
+  auth-fe:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-fe:test
+    container_name: lucy-auth-web
+    restart: unless-stopped
+    networks:
+      - internal-network
