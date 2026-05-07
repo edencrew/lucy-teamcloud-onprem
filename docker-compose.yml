@@ -1,0 +1,178 @@
+name: lucy-teamcloud-onprem
+
+networks:
+  internal-network:
+    external: false
+
+services:
+  # 인스턴스별 시크릿 자동 생성 (첫 부팅 시 1회).
+  # ./secrets/secrets.env 가 이미 있으면 no-op 으로 즉시 종료.
+  init-secrets:
+    image: alpine:3.20
+    restart: "no"
+    volumes:
+      - ./secrets:/secrets
+      - ./scripts/init-secrets.sh:/init-secrets.sh:ro
+    command: ["/bin/sh", "/init-secrets.sh"]
+
+  gw:
+    image: nginx:1.26-alpine
+    restart: unless-stopped
+    networks:
+      - internal-network
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
+    depends_on:
+      db:
+        condition: service_healthy
+      git:
+        condition: service_started
+      auth-be:
+        condition: service_healthy
+      auth-fe:
+        condition: service_started
+      tc-be:
+        condition: service_healthy
+      tc-fe:
+        condition: service_started
+
+  git:
+    image: docker.gitea.com/gitea:1.25.3
+    restart: unless-stopped
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      - LUCY_ADMIN_NAME=${LUCY_ADMIN_NAME}
+      - LUCY_ADMIN_PASSWORD=${LUCY_ADMIN_PASSWORD}
+      - EXTERNAL_URL=${EXTERNAL_URL}
+      - USER_UID=${HOST_UID:-1000}
+      - USER_GID=${HOST_GID:-1000}
+      - TZ=${TZ:-UTC}
+      - GITEA__database__USER=${DB_USERNAME}
+      - GITEA__database__PASSWD=${DB_PASSWORD}
+      - GITEA__server__DISABLE_SSH=true
+    networks:
+      - internal-network
+    volumes:
+      - ./git/data:/data
+      - ./git/app.ini:/app.ini.default:ro
+      - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro
+      - ./secrets:/run/secrets:ro
+    entrypoint: ["/bin/sh", "/gitea-entrypoint.sh"]
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      - POSTGRES_PASSWORD=${DB_ROOT_PASSWORD}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TZ=${TZ:-UTC}
+    networks:
+      - internal-network
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+
+  auth-be:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-be:test-onprem
+    restart: unless-stopped
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      FRONTEND_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_auth
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_auth"
+      ADMIN_EMAIL: ${LUCY_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${LUCY_ADMIN_PASSWORD}
+      ADMIN_NAME: ${LUCY_ADMIN_NAME}
+      JWT_EXPIRES_TIME: 60m
+      OIDC_ISSUER: ${EXTERNAL_URL}/auth
+      # JWT_*, OIDC_COOKIE_KEYS, OIDC_CLIENT_SECRET, OIDC_CLIENTS_PRESET 은
+      # init-secrets 가 생성한 /run/secrets/secrets.env 와 auth-entrypoint.sh 에서 export 됨
+      EXTERNAL_URL: ${EXTERNAL_URL}
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/auth-entrypoint.sh"]
+    networks:
+      - internal-network
+
+  tc-be:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-be:test-onprem
+    restart: unless-stopped
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      TEAMCLOUD_URL: ${EXTERNAL_URL}
+      # OIDC redirect 는 브라우저가 이 URL 로 이동하므로 외부 URL 이어야 함.
+      # BE-to-BE (token 교환, JWKS 검증) 호출도 같은 URL 로 나가 nginx 경유로 auth-be 에 도달.
+      AUTH_SERVER_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_teamcloud
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
+      GIT_PROVIDER: ${GIT_PROVIDER}
+      GIT_HOST: http://git
+      GIT_USERNAME: ${LUCY_ADMIN_NAME}
+      GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
+      WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
+      OIDC_CLIENT_ID: lucy-teamcloud-oidc-client-id
+      # OIDC_CLIENT_SECRET 은 /run/secrets/secrets.env 와 tc-entrypoint.sh 에서 export 됨
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro
+      - ./license:/app/license:ro
+    entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
+    networks:
+      - internal-network
+
+  tc-fe:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-fe:test-onprem
+    restart: unless-stopped
+    networks:
+      - internal-network
+
+  auth-fe:
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-fe:test-onprem
+    restart: unless-stopped
+    networks:
+      - internal-network

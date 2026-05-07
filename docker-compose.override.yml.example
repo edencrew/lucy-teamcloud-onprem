@@ -1,0 +1,20 @@
+# 호스트 환경에 맞게 설정을 덮어쓰는 예제 파일입니다.
+# 사용법:
+#   1. 이 파일을 docker-compose.override.yml 로 복사
+#        cp docker-compose.override.yml.example docker-compose.override.yml
+#   2. 필요한 부분의 값을 수정
+#   3. docker compose up -d
+#
+# 가급적 원본 docker-compose.yml 은 직접 수정하지 마세요.
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # 호스트 포트 매핑
+  # 기본 80, 443 이 충돌하면 좌측(호스트) 값을 변경하세요.
+  # 변경 후 .env 의 EXTERNAL_URL 에도 포트를 반영해야 합니다.
+  #   예) EXTERNAL_URL=https://your-domain.com:8443
+  # ─────────────────────────────────────────────────────────────
+  gw:
+    ports: !override  # 포트매핑 변경시 반드시 .env EXTERNAL_URL 도 반영해 주세요
+      - "80:80"
+      - "443:443"
