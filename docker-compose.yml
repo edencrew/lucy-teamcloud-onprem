@@ -87,7 +87,7 @@ services:
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
 
   auth-be:
-    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-be:test-onprem
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-be:onprem-prod-0.0.3
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -125,7 +125,7 @@ services:
       - internal-network
 
   tc-be:
-    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-be:test-onprem
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-be:onprem-prod-0.0.3
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -166,13 +166,13 @@ services:
       - internal-network
 
   tc-fe:
-    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-fe:test-onprem
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-teamcloud-fe:onprem-prod-0.0.3
     restart: unless-stopped
     networks:
       - internal-network
 
   auth-fe:
-    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-fe:test-onprem
+    image: 700918785277.dkr.ecr.ap-northeast-2.amazonaws.com/lucy-auth-fe:onprem-prod-0.0.3
     restart: unless-stopped
     networks:
       - internal-network
