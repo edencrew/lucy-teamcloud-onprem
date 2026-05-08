@@ -125,6 +125,8 @@ docker compose logs -f tc-be
 docker compose ps
 ```
 
+> `init-secrets` 컨테이너는 첫 부팅 시 인스턴스별 시크릿(`secrets/secrets.env`)을 생성하고 종료되는 일회성 컨테이너입니다. 목록에 `Exited (0)` 상태로 남아 있는 것은 정상이며, 리소스를 점유하지 않습니다.
+
 ## 5. 서비스 종료
 
 ```bash
