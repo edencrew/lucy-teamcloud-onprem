@@ -4,3 +4,5 @@ gw-data/
 docker-compose.override.yml
 secrets/secrets.env
 license/license.json
+broker/data/
+broker/logs/
