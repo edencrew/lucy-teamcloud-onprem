@@ -23,6 +23,12 @@ cp .env.example .env
 # 프로토콜(http:// 또는 https://)을 반드시 포함하세요.
 EXTERNAL_URL=https://your-domain.com
 
+# MQTT 브로커 WebSocket 접속 주소 (브라우저가 브로커에 연결할 때 사용)
+# 기본값은 EXTERNAL_URL 에 /mqtt 를 붙인 형태이며, nginx 의 /mqtt/ 리버스 프록시를 경유합니다.
+# 별도 도메인/포트로 브로커를 노출하는 경우에만 변경하세요.
+# EXTERNAL_URL 이 https 면 wss://, http 면 ws:// 를 사용해야 합니다.
+BROKER_WS_URL=wss://your-domain.com/mqtt
+
 # Lucy 서비스 관리자 계정
 LUCY_ADMIN_EMAIL=admin@your-company.com
 LUCY_ADMIN_PASSWORD=your-secure-password
@@ -42,6 +48,7 @@ TZ=Asia/Seoul
 | 항목 | 주의사항 |
 |------|----------|
 | `EXTERNAL_URL` | `localhost`, `127.0.0.1` 사용 불가. 반드시 외부에서 접근 가능한 주소 입력 |
+| `BROKER_WS_URL` | `EXTERNAL_URL` 의 스킴과 짝을 맞출 것 (`https` → `wss://`, `http` → `ws://`). 기본 경로는 `/mqtt` |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요 (예: `DB_PASSWORD="P@ss!word"`) |
 | Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
