@@ -1,26 +1,56 @@
 #!/bin/sh
-# Lucy onprem 인스턴스별 시크릿 자동 생성 스크립트
+# Lucy onprem 인스턴스별 시크릿/인증서 자동 생성 스크립트
 #
-# 첫 부팅 시 한 번만 실행되어 /secrets/secrets.env 를 생성한다.
-# 이후 부팅에서는 파일이 이미 존재하면 아무 것도 하지 않는다 (idempotent).
-# 생성 결과 파일은 데이터 폴더(postgres/data, git/data)와 동일한 라이프사이클로 보존되어야 한다.
-# 이 파일이 분실되면 모든 사용자 재로그인 + Gitea 2FA 데이터 복호화 불가.
+# 첫 부팅 시 한 번만 실행되어 /secrets/secrets.env 와 /certs/server.{crt,key} 를 생성한다.
+# 이후 부팅에서는 각 파일이 이미 존재하면 그대로 둔다 (idempotent).
+# secrets.env: 데이터 폴더(postgres/data, git/data)와 동일한 라이프사이클로 보존.
+#              분실 시 모든 사용자 재로그인 + Gitea 2FA 데이터 복호화 불가.
+# server.crt/key: self-signed 기본. 정식 인증서로 교체 시 그대로 두면 됨.
 
 set -e
 
 SECRETS=/secrets/secrets.env
+CERT_DIR=/certs
 
+# alpine 이미지에 openssl 이 없으면 설치
+if ! command -v openssl >/dev/null 2>&1; then
+  apk add --no-cache openssl >/dev/null
+fi
+
+# ──────────────────────────────────────────────
+# 1) self-signed 인증서 발급
+# ──────────────────────────────────────────────
+if [ -f "$CERT_DIR/server.crt" ] && [ -f "$CERT_DIR/server.key" ]; then
+  echo "[init-secrets] $CERT_DIR/server.{crt,key} already exist, skipping cert."
+else
+  # EXTERNAL_URL 에서 호스트 추출 (스킴 제거 후 첫 ':' 또는 '/' 이전까지)
+  HOST=$(printf '%s' "$EXTERNAL_URL" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*##')
+  if [ -z "$HOST" ]; then
+    echo "[init-secrets] EXTERNAL_URL is empty; cannot generate cert." >&2
+    exit 1
+  fi
+  echo "[init-secrets] generating self-signed cert for $HOST ..."
+  mkdir -p "$CERT_DIR"
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$CERT_DIR/server.key" \
+    -out "$CERT_DIR/server.crt" \
+    -days 3650 \
+    -subj "/CN=$HOST/O=Lucy TeamCloud/C=KR" \
+    -addext "subjectAltName=DNS:$HOST,DNS:localhost" \
+    >/dev/null 2>&1
+  chmod 644 "$CERT_DIR/server.crt"
+  chmod 600 "$CERT_DIR/server.key"
+fi
+
+# ──────────────────────────────────────────────
+# 2) 인스턴스별 시크릿 발급
+# ──────────────────────────────────────────────
 if [ -f "$SECRETS" ]; then
   echo "[init-secrets] $SECRETS already exists, skipping."
   exit 0
 fi
 
 echo "[init-secrets] generating $SECRETS ..."
-
-# alpine 이미지에 openssl 이 없으면 설치
-if ! command -v openssl >/dev/null 2>&1; then
-  apk add --no-cache openssl >/dev/null
-fi
 
 mkdir -p /secrets
 

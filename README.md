@@ -94,19 +94,30 @@ cp /path/to/your/license.json license/license.json
 
 ## 3. SSL 인증서 설정
 
-`nginx/certs/` 폴더에 기본 자체 서명 인증서가 포함되어 있습니다.
+별도 작업 없이 첫 부팅 시 `init-secrets` 가 `.env` 의 `EXTERNAL_URL` 도메인으로
+self-signed 인증서를 자동 발급해 `nginx/certs/server.{crt,key}` 에 둡니다.
+브라우저에서는 자체 서명 경고가 뜨지만 BE-to-BE HTTPS 호출은 정상 동작합니다.
 
 **운영 환경에서는 실제 인증서로 교체하세요:**
 
 ```bash
-# 기존 인증서 백업 (선택)
-mv nginx/certs/server.crt nginx/certs/server.crt.bak
-mv nginx/certs/server.key nginx/certs/server.key.bak
-
-# 실제 인증서 복사
+# 자동 발급된 인증서를 덮어쓰기
 cp /path/to/your/certificate.crt nginx/certs/server.crt
 cp /path/to/your/private.key nginx/certs/server.key
+
+# 적용
+docker compose restart gw
 ```
+
+`init-secrets` 는 파일이 이미 있으면 건드리지 않으므로 (idempotent) 정식 인증서는
+보존됩니다.
+
+> **`EXTERNAL_URL` 도메인을 변경한 경우**: 기존 self-signed 인증서가 새 도메인과
+> 매칭되지 않아 BE-to-BE 호출이 실패합니다. 다음 두 파일을 삭제 후 재기동하세요.
+> ```bash
+> rm nginx/certs/server.crt nginx/certs/server.key
+> docker compose up -d
+> ```
 
 ## 4. 서비스 실행
 

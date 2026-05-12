@@ -5,13 +5,17 @@ networks:
     external: false
 
 services:
-  # 인스턴스별 시크릿 자동 생성 (첫 부팅 시 1회).
-  # ./secrets/secrets.env 가 이미 있으면 no-op 으로 즉시 종료.
+  # 인스턴스별 시크릿/self-signed 인증서 자동 생성 (첫 부팅 시 1회).
+  # ./secrets/secrets.env, ./nginx/certs/server.{crt,key} 가 이미 있으면
+  # 각각 no-op (idempotent). 정식 인증서로 교체하면 그대로 보존됨.
   init-secrets:
     image: alpine:3.20
     restart: "no"
+    environment:
+      EXTERNAL_URL: ${EXTERNAL_URL}
     volumes:
       - ./secrets:/secrets
+      - ./nginx/certs:/certs
       - ./scripts/init-secrets.sh:/init-secrets.sh:ro
     command: ["/bin/sh", "/init-secrets.sh"]
 
@@ -27,6 +31,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
     depends_on:
+      init-secrets:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       git:
@@ -146,15 +152,20 @@ services:
       # JWT_*, OIDC_COOKIE_KEYS, OIDC_CLIENT_SECRET, OIDC_CLIENTS_PRESET 은
       # init-secrets 가 생성한 /run/secrets/secrets.env 와 auth-entrypoint.sh 에서 export 됨
       EXTERNAL_URL: ${EXTERNAL_URL}
+      # BE-to-BE HTTPS 호출(JWKS 검증 등) 시 nginx 가 제시하는 인증서를 신뢰하도록
+      # nginx/certs/server.crt 를 Node 의 추가 CA 로 등록. self-signed/사설 CA 인증서를
+      # 그대로 둬도 동작하며, 공인 인증서로 교체해도 무해.
+      NODE_EXTRA_CA_CERTS: /certs/server.crt
     volumes:
       - ./secrets:/run/secrets:ro
       - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro
+      - ./nginx/certs/server.crt:/certs/server.crt:ro
     entrypoint: ["/bin/sh", "/auth-entrypoint.sh"]
     networks:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/b6l3z2w1/lucy-teamcloud-be:onprem-prod-0.0.7
+    image: public.ecr.aws/b6l3z2w1/lucy-teamcloud-be:onprem-prod-0.0.8
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -179,7 +190,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE: lucy_teamcloud
       DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
-      GIT_PROVIDER: ${GIT_PROVIDER}
+      GIT_PROVIDER: gitea  # onprem 은 gitea 고정
       GIT_HOST: http://git
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
       GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
@@ -190,16 +201,20 @@ services:
       # BROKER_WS_URL 기본값은 EXTERNAL_URL 에 /mqtt 를 붙인 형태 (nginx 의 /mqtt/ 리버스 프록시 경유).
       # 필요 시 .env 의 BROKER_WS_URL 로 명시적 override 가능.
       BROKER_WS_URL: ${BROKER_WS_URL}
+      # BE-to-BE HTTPS 호출(토큰 교환 등) 시 nginx 가 제시하는 인증서를 신뢰하도록
+      # nginx/certs/server.crt 를 Node 의 추가 CA 로 등록.
+      NODE_EXTRA_CA_CERTS: /certs/server.crt
     volumes:
       - ./secrets:/run/secrets:ro
       - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro
       - ./license:/app/license:ro
+      - ./nginx/certs/server.crt:/certs/server.crt:ro
     entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
     networks:
       - internal-network
 
   tc-fe:
-    image: public.ecr.aws/b6l3z2w1/lucy-teamcloud-fe:onprem-prod-0.0.7
+    image: public.ecr.aws/b6l3z2w1/lucy-teamcloud-fe:onprem-prod-0.0.8
     restart: unless-stopped
     networks:
       - internal-network
