@@ -165,7 +165,7 @@ services:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.8
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.9
     restart: unless-stopped
     depends_on:
       init-secrets:
