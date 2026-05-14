@@ -220,7 +220,7 @@ services:
       - internal-network
 
   auth-fe:
-    image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.8
+    image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.9
     restart: unless-stopped
     networks:
       - internal-network
