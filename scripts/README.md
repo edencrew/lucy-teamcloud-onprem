@@ -27,6 +27,7 @@ lucy-teamcloud-onprem/
     export-compose-images.sh
     load-compose-images.sh
     preflight-onprem.sh
+    onprem-compose.sh
     init-secrets.sh
 
   images/
@@ -157,7 +158,35 @@ docker compose config 검증
 
 ---
 
-## 2.6 `scripts/init-secrets.sh`
+## 2.6 `scripts/onprem-compose.sh`
+
+설치 후 운영자가 사용하는 Docker Compose 래퍼 스크립트입니다.
+
+역할:
+
+```text
+사전 검증 후 서비스 시작
+데이터를 보존하는 전체 중지
+서비스 재시작/재생성
+이미지 archive 로드 후 태그 검증 및 재생성
+상태/로그/config/image 목록 확인
+```
+
+기본 `down` 명령은 데이터를 보존하며 `docker compose down -v`를 실행하지 않습니다.
+
+예:
+
+```bash
+./scripts/onprem-compose.sh up
+./scripts/onprem-compose.sh restart broker
+./scripts/onprem-compose.sh recreate broker
+./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+./scripts/onprem-compose.sh down
+```
+
+---
+
+## 2.7 `scripts/init-secrets.sh`
 
 사용자가 직접 실행하는 스크립트가 아닙니다.
 
@@ -255,12 +284,14 @@ license/license.json
 scripts/
   load-compose-images.sh
   preflight-onprem.sh
+  onprem-compose.sh
   init-secrets.sh
 
 images/
   *.tar.gz
   *.tar.gz.sha256
   *.images.txt
+  *.services.txt
 ```
 
 ---
@@ -322,6 +353,69 @@ docker compose \
 
 ```bash
 ./scripts/preflight-onprem.sh --help
+```
+
+---
+
+## 4.5 운영 유틸 스크립트
+
+설치 후에는 `onprem-compose.sh`로 일반 운영 작업을 수행할 수 있습니다.
+
+일반 시작:
+
+```bash
+./scripts/onprem-compose.sh up
+```
+
+전체 스택을 데이터 보존 방식으로 재시작:
+
+```bash
+./scripts/onprem-compose.sh restart-stack
+```
+
+특정 서비스만 재시작:
+
+```bash
+./scripts/onprem-compose.sh restart broker
+```
+
+특정 서비스 컨테이너를 재생성:
+
+```bash
+./scripts/onprem-compose.sh recreate broker
+```
+
+이미지 archive 교체 후 재생성:
+
+```bash
+./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+```
+
+`replace-images`는 archive 옆의 `*.images.txt`와 `*.services.txt`를 함께 사용합니다.
+`*.services.txt` 기준으로 `.install-state/compose-image-tags.override.yml`을 생성한 뒤,
+그 override를 포함한 Compose image 목록이 `*.images.txt`와 정확히 일치할 때만 이미지를
+로드하고 컨테이너를 재생성합니다.
+
+저장된 image tag override 확인:
+
+```bash
+./scripts/onprem-compose.sh image-override
+```
+
+저장된 image tag override 삭제:
+
+```bash
+./scripts/onprem-compose.sh clear-image-override
+```
+
+삭제해도 서비스 데이터와 Docker volume은 삭제되지 않습니다.
+
+상태 및 로그 확인:
+
+```bash
+./scripts/onprem-compose.sh ps
+./scripts/onprem-compose.sh logs broker
+./scripts/onprem-compose.sh images
 ```
 
 ---
@@ -593,18 +687,22 @@ docker compose \
 폐쇄망 서버에서는 다음 순서로 실행합니다.
 
 ```bash
-./scripts/load-compose-images.sh
-./scripts/preflight-onprem.sh
-./scripts/preflight-onprem.sh --compose-up
+./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
 ```
 
-또는 마지막 단계를 수동으로 실행합니다.
+`replace-images`는 이미지 로드, 사전 검증, 컨테이너 재생성을 한 번에 수행합니다.
+
+이미지를 이미 로드했고 tag override가 필요하지 않다면 다음처럼 실행할 수 있습니다.
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.offline.yml \
-  up -d --pull never --no-build
+./scripts/onprem-compose.sh up
+```
+
+또는 기존 preflight 흐름을 사용할 수 있습니다.
+
+```bash
+./scripts/preflight-onprem.sh
+./scripts/preflight-onprem.sh --compose-up
 ```
 
 ---
@@ -689,17 +787,21 @@ secrets/
 ## 12.2 폐쇄망 서버에서 새 이미지 로드
 
 ```bash
-./scripts/load-compose-images.sh ./images/<new-image-archive>.tar.gz
+./scripts/onprem-compose.sh replace-images ./images/<new-image-archive>.tar.gz
 ```
+
+이 명령은 새 archive의 `*.services.txt`를 기준으로 image tag override를 저장하고,
+archive를 로드한 뒤 새 태그로 컨테이너를 재생성합니다.
 
 ---
 
-## 12.3 검증 후 재실행
+## 12.3 특정 서비스만 재생성
 
 ```bash
-./scripts/preflight-onprem.sh
-./scripts/preflight-onprem.sh --compose-up
+./scripts/onprem-compose.sh recreate broker
 ```
+
+저장된 image tag override가 있으면 `recreate`도 해당 태그를 사용합니다.
 
 ---
 
@@ -714,6 +816,7 @@ secrets/
 | `nginx/certs/` | SSL 인증서 | 권장 |
 | `.env` | 설치 환경 설정 | 필수 |
 | `.install-state/immutable.env.sha256` | 최초 설정값 변경 감지용 파일 | 권장 |
+| `.install-state/compose-image-tags.override.yml` | 설치 서버에서 사용할 image tag override | 권장 |
 
 ---
 
@@ -945,6 +1048,7 @@ python3 -m json.tool license/license.json
 ./scripts/export-compose-images.sh --help
 ./scripts/load-compose-images.sh --help
 ./scripts/preflight-onprem.sh --help
+./scripts/onprem-compose.sh --help
 ```
 
 ---
