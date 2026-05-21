@@ -216,7 +216,7 @@ services:
       - internal-network
 
   tc-fe:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.9
+    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.10
     restart: unless-stopped
     networks:
       - internal-network
