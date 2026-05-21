@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -149,6 +149,7 @@ CHECKS PERFORMED
   - BROKER_WS_URL scheme matches EXTERNAL_URL scheme
   - LUCY_ADMIN_NAME is admin
   - license/license.json exists, non-empty, and JSON-valid when jq/python exists
+  - runtime bind mount directories exist before Docker Compose can auto-create them as root
   - nginx certificate pair consistency
   - certificate hostname match when openssl is available
   - docker compose config --quiet succeeds
@@ -231,6 +232,186 @@ resolve_path_from_root() {
       printf '%s/%s' "$ROOT_DIR" "$path"
       ;;
   esac
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'%s'" "$(printf '%s' "$value" | sed "s/'/'\\\\''/g")"
+}
+
+is_numeric_id() {
+  case "$1" in
+    ""|*[!0-9]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+resolve_runtime_owner() {
+  local env_uid env_gid current_uid current_gid
+  local invalid_owner
+  invalid_owner=0
+
+  env_uid="$(get_env_value HOST_UID)"
+  env_gid="$(get_env_value HOST_GID)"
+
+  if [ -n "$env_uid" ] && ! is_numeric_id "$env_uid"; then
+    fail_msg "HOST_UID must be numeric: $env_uid"
+    invalid_owner=1
+  fi
+
+  if [ -n "$env_gid" ] && ! is_numeric_id "$env_gid"; then
+    fail_msg "HOST_GID must be numeric: $env_gid"
+    invalid_owner=1
+  fi
+
+  if [ "$invalid_owner" -eq 1 ]; then
+    return 1
+  fi
+
+  if command -v id >/dev/null 2>&1; then
+    current_uid="$(id -u)"
+    current_gid="$(id -g)"
+  else
+    current_uid=""
+    current_gid=""
+  fi
+
+  RUNTIME_UID="${env_uid:-$current_uid}"
+  RUNTIME_GID="${env_gid:-$current_gid}"
+
+  if [ -z "$RUNTIME_UID" ] || [ -z "$RUNTIME_GID" ]; then
+    fail_msg "Could not resolve runtime UID/GID. Set HOST_UID and HOST_GID in .env."
+    return 1
+  fi
+
+  if [ "$RUNTIME_UID" = "0" ]; then
+    fail_msg "Runtime bind mount owner must not be root. Set HOST_UID/HOST_GID to the install user's id values."
+    return 1
+  fi
+
+  if [ -z "$env_uid" ]; then
+    warn "HOST_UID is not set. Using current UID for bind mount preparation: $RUNTIME_UID"
+  else
+    ok "HOST_UID is set: $env_uid"
+  fi
+
+  if [ -z "$env_gid" ]; then
+    warn "HOST_GID is not set. Using current GID for bind mount preparation: $RUNTIME_GID"
+  else
+    ok "HOST_GID is set: $env_gid"
+  fi
+
+  ok "Runtime bind mount owner target: ${RUNTIME_UID}:${RUNTIME_GID}"
+}
+
+ensure_directory_exists() {
+  local rel="$1"
+  local full="$ROOT_DIR/$rel"
+
+  if [ -e "$full" ] && [ ! -d "$full" ]; then
+    fail_msg "Path exists but is not a directory: $rel"
+    return 1
+  fi
+
+  if [ ! -d "$full" ]; then
+    if mkdir -p "$full"; then
+      ok "Directory created: $rel"
+    else
+      fail_msg "Could not create directory: $rel"
+      warn "Suggested fix: mkdir -p $(shell_quote "$full")"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+first_owner_mismatch() {
+  local path="$1"
+  local uid="$2"
+  local gid="$3"
+
+  find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print 2>/dev/null \
+    | awk 'NR == 1 { print; exit }'
+}
+
+first_root_owned_path() {
+  local path="$1"
+
+  find "$path" -user 0 -print 2>/dev/null \
+    | awk 'NR == 1 { print; exit }'
+}
+
+print_root_owned_sample() {
+  local path="$1"
+
+  find "$path" -user 0 -print 2>/dev/null | sed -n '1,5p'
+}
+
+directory_is_empty() {
+  local path="$1"
+  local first
+
+  first="$(find "$path" -mindepth 1 -print 2>/dev/null | awk 'NR == 1 { print; exit }')"
+  [ -z "$first" ]
+}
+
+prepare_host_owned_directory() {
+  local rel="$1"
+  local full="$ROOT_DIR/$rel"
+  local mismatch
+
+  ensure_directory_exists "$rel" || return 0
+
+  mismatch="$(first_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
+  if [ -n "$mismatch" ]; then
+    if chown -R "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
+      ok "Directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
+    else
+      fail_msg "Directory ownership mismatch and automatic chown failed: $rel"
+      warn "First mismatched path: $mismatch"
+      warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+      return 0
+    fi
+  fi
+
+  if [ -w "$full" ]; then
+    ok "Directory exists and is writable: $rel"
+  else
+    fail_msg "Directory exists but is not writable: $rel"
+    warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+  fi
+}
+
+prepare_service_owned_directory() {
+  local rel="$1"
+  local full="$ROOT_DIR/$rel"
+  local root_owned
+
+  ensure_directory_exists "$rel" || return 0
+
+  root_owned="$(first_root_owned_path "$full")"
+  if [ -n "$root_owned" ]; then
+    if directory_is_empty "$full"; then
+      if chown "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
+        ok "Empty service data directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
+      else
+        fail_msg "Empty service data directory is root-owned and automatic chown failed: $rel"
+        warn "Suggested fix: sudo chown ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+      fi
+    else
+      fail_msg "Service data directory contains root-owned entries: $rel"
+      warn "Preflight does not recursively chown existing PostgreSQL data."
+      warn "Root-owned sample:"
+      print_root_owned_sample "$full" >&2
+    fi
+  else
+    ok "Service data directory exists and is not root-owned: $rel"
+  fi
 }
 
 array_contains() {
@@ -1050,51 +1231,19 @@ validate_ports() {
   done
 }
 
-validate_directories() {
-  log "Checking required paths and writable directories..."
+prepare_and_validate_directories() {
+  log "Preparing runtime bind mount directories..."
 
-  local dirs="postgres/data git/data secrets license nginx/certs"
+  resolve_runtime_owner || return 0
 
-  local d full
-  for d in $dirs; do
-    full="$ROOT_DIR/$d"
+  local host_owned_dirs="git/data broker/data broker/logs secrets nginx/certs license"
+  local d
 
-    if [ -d "$full" ]; then
-      if [ -w "$full" ]; then
-        ok "Directory exists and is writable: $d"
-      else
-        fail_msg "Directory exists but is not writable: $d"
-      fi
-    else
-      local parent
-      parent="$(dirname "$full")"
-      if [ -d "$parent" ] && [ -w "$parent" ]; then
-        warn "Directory does not exist yet but parent is writable: $d"
-      else
-        fail_msg "Directory does not exist and parent is not writable: $d"
-      fi
-    fi
+  for d in $host_owned_dirs; do
+    prepare_host_owned_directory "$d"
   done
 
-  if command -v id >/dev/null 2>&1; then
-    local host_uid host_gid env_uid env_gid
-    host_uid="$(id -u)"
-    host_gid="$(id -g)"
-    env_uid="$(get_env_value HOST_UID)"
-    env_gid="$(get_env_value HOST_GID)"
-
-    if [ -z "$env_uid" ]; then
-      warn "HOST_UID is not set. Recommended on Linux: HOST_UID=$host_uid"
-    else
-      ok "HOST_UID is set: $env_uid"
-    fi
-
-    if [ -z "$env_gid" ]; then
-      warn "HOST_GID is not set. Recommended on Linux: HOST_GID=$host_gid"
-    else
-      ok "HOST_GID is set: $env_gid"
-    fi
-  fi
+  prepare_service_owned_directory "postgres/data"
 }
 
 hash_command() {
@@ -1287,9 +1436,9 @@ main() {
   validate_required_env
   validate_urls
   validate_admin_name
+  prepare_and_validate_directories
   validate_license
   validate_certificates
-  validate_directories
   validate_compose_config
   validate_ports
   validate_local_images
