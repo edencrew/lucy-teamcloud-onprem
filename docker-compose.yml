@@ -122,7 +122,7 @@ services:
         max-file: "5"
 
   auth-be:
-    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.7
+    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.8
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -160,12 +160,13 @@ services:
       - ./secrets:/run/secrets:ro
       - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro
       - ./nginx/certs/server.crt:/certs/server.crt:ro
+      - ./auth/logs:/app/logs
     entrypoint: ["/bin/sh", "/auth-entrypoint.sh"]
     networks:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.9
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.10
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -209,12 +210,13 @@ services:
       - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro
       - ./license:/app/license:ro
       - ./nginx/certs/server.crt:/certs/server.crt:ro
+      - ./tc/logs:/app/logs
     entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
     networks:
       - internal-network
 
   tc-fe:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.8
+    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.9
     restart: unless-stopped
     networks:
       - internal-network
