@@ -1,0 +1,1322 @@
+#!/usr/bin/env bash
+set -Eeo pipefail
+
+# preflight-onprem.sh
+#
+# Recommended location:
+#   <project-root>/scripts/preflight-onprem.sh
+#
+# Purpose:
+#   Verify that a Lucy TeamCloud On-Premise installation is ready before:
+#     docker compose up -d
+#
+# Optional:
+#   With --compose-up, this script runs:
+#     docker compose up -d --pull never --no-build
+#
+# Compatibility:
+#   - Bash 3+ compatible. Works with macOS default /bin/bash 3.2.
+#   - Intended for Linux offline servers, but most checks also work on macOS.
+#
+# Why not `set -u`?
+#   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
+#   This script avoids nounset for portability and validates values explicitly.
+
+SCRIPT_VERSION="1.2.0"
+
+MIN_DOCKER_VERSION="20.10.0"
+MIN_COMPOSE_VERSION="2.20.0"
+MIN_RAM_MB="4096"
+MIN_DISK_MB="10240"
+
+IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
+
+show_help() {
+  cat <<'EOF'
+preflight-onprem.sh
+
+DESCRIPTION
+  Verify Lucy TeamCloud On-Premise installation prerequisites before running:
+    docker compose up -d
+
+  This script assumes the user has already prepared:
+    - .env
+    - license/license.json
+    - Docker images loaded by load-compose-images.sh
+    - optional SSL certificate files
+
+RECOMMENDED LOCATION
+  <project-root>/scripts/preflight-onprem.sh
+
+USAGE
+  ./scripts/preflight-onprem.sh [OPTIONS]
+
+OPTIONS
+  -h, --help
+      Show this help message and exit.
+
+  -v, --version
+      Show script version and exit.
+
+  --compose-up
+      Run docker compose up after all checks pass:
+        docker compose up -d --pull never --no-build
+
+  --allow-immutable-change
+      Do not fail when immutable .env values changed after the initial lock
+      was created. This is dangerous and should only be used intentionally.
+
+  --allow-cert-host-mismatch
+      Do not fail when nginx/certs/server.crt does not appear to match
+      EXTERNAL_URL hostname. This may break HTTPS BE-to-BE calls.
+
+  --skip-port-check
+      Skip host port conflict checks.
+
+  --skip-image-check
+      Skip local image existence checks.
+
+  --skip-arch-check
+      Skip Docker image architecture checks.
+
+  --skip-resource-check
+      Skip RAM and disk checks.
+
+ENVIRONMENT VARIABLES
+  PROJECT_ROOT
+      Explicit project root path.
+      Default:
+        If script is inside ./scripts, parent directory of ./scripts.
+        Otherwise, the directory containing this script.
+
+  TARGET_PLATFORM
+      Expected Docker image platform.
+      Default: detected from the server CPU architecture.
+
+      Examples:
+        TARGET_PLATFORM=linux/amd64
+        TARGET_PLATFORM=linux/arm64
+
+  PLATFORM
+      Alias for TARGET_PLATFORM when TARGET_PLATFORM is not set.
+
+  TARGET_PLATFORM
+      Expected Docker image platform.
+      Default: detected from server CPU architecture.
+
+      Examples:
+        TARGET_PLATFORM=linux/amd64
+        TARGET_PLATFORM=linux/arm64
+
+  PLATFORM
+      Alias for TARGET_PLATFORM when TARGET_PLATFORM is not set.
+
+  COMPOSE_FILES
+      Explicit compose files to use, separated by colon (:).
+      Paths are resolved relative to PROJECT_ROOT unless absolute.
+      Later files override earlier files.
+
+      Example:
+        COMPOSE_FILES="docker-compose.yml:docker-compose.prod.yml"
+
+  COMPOSE_OVERRIDE_FILES
+      Extra override files to append after auto-detected compose files,
+      separated by colon (:).
+      Paths are resolved relative to PROJECT_ROOT unless absolute.
+
+EXAMPLES
+  Basic check:
+    ./scripts/preflight-onprem.sh
+
+  Check and start services:
+    ./scripts/preflight-onprem.sh --compose-up
+
+  Run from anywhere:
+    PROJECT_ROOT=/opt/lucy-teamcloud-onprem /opt/lucy-teamcloud-onprem/scripts/preflight-onprem.sh
+
+AUTO-DETECTED COMPOSE FILE ORDER
+  1. Base compose file
+  2. docker-compose.offline.yml / docker-compose.offline.yaml if present
+  3. docker-compose.override.yml / docker-compose.override.yaml if present
+
+CHECKS PERFORMED
+  - Docker installed and daemon reachable
+  - Docker version >= 20.10
+  - Docker Compose plugin version >= 2.20
+  - Minimum RAM and disk
+  - .env exists and required values are present
+  - EXTERNAL_URL is valid and not localhost / 127.0.0.1 / 0.0.0.0
+  - BROKER_WS_URL scheme matches EXTERNAL_URL scheme
+  - LUCY_ADMIN_NAME is admin
+  - license/license.json exists, non-empty, and JSON-valid when jq/python exists
+  - nginx certificate pair consistency
+  - certificate hostname match when openssl is available
+  - docker compose config --quiet succeeds
+  - host port conflicts from final merged compose config
+  - final compose images exist locally
+  - final compose image architectures match the target platform
+  - immutable .env values are locked and compared on subsequent runs
+
+EOF
+}
+
+log() {
+  printf '\n\033[1;34m[INFO]\033[0m %s\n' "$*"
+}
+
+ok() {
+  printf '  \033[1;32mOK\033[0m   %s\n' "$*"
+}
+
+warn() {
+  printf '  \033[1;33mWARN\033[0m %s\n' "$*" >&2
+}
+
+fail_msg() {
+  printf '  \033[1;31mFAIL\033[0m %s\n' "$*" >&2
+  FAILURES=$((FAILURES + 1))
+}
+
+die() {
+  printf '\n\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+script_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+      /*) ;;
+      *) src="$dir/$src" ;;
+    esac
+  done
+  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+
+resolve_project_root() {
+  local sdir="$1"
+  local root=""
+
+  if [ -n "${PROJECT_ROOT:-}" ]; then
+    root="$PROJECT_ROOT"
+  else
+    case "$(basename "$sdir")" in
+      scripts)
+        root="$(dirname "$sdir")"
+        ;;
+      *)
+        root="$sdir"
+        ;;
+    esac
+  fi
+
+  (cd "$root" >/dev/null 2>&1 && pwd) || die "Project root not found or not accessible: $root"
+}
+
+resolve_path_from_root() {
+  local path="$1"
+
+  case "$path" in
+    /*)
+      printf '%s' "$path"
+      ;;
+    *)
+      printf '%s/%s' "$ROOT_DIR" "$path"
+      ;;
+  esac
+}
+
+array_contains() {
+  local needle="$1"
+  shift || true
+
+  local item
+  for item in "$@"; do
+    [ "$item" = "$needle" ] && return 0
+  done
+
+  return 1
+}
+
+split_colon_list_to_lines() {
+  local value="$1"
+  printf '%s' "$value" | awk 'BEGIN { RS=":" } NF > 0 { print }'
+}
+
+add_compose_file_unique() {
+  local file="$1"
+  if ! array_contains "$file" "${COMPOSE_FILE_LIST[@]}"; then
+    COMPOSE_FILE_LIST+=("$file")
+  fi
+}
+
+detect_base_compose_file() {
+  local candidates="docker-compose.yaml docker-compose.yml compose.yaml compose.yml"
+  local f
+
+  for f in $candidates; do
+    if [ -f "$ROOT_DIR/$f" ]; then
+      printf '%s' "$ROOT_DIR/$f"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+detect_compose_files() {
+  COMPOSE_FILE_LIST=()
+
+  if [ -n "${COMPOSE_FILES:-}" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      f="$(resolve_path_from_root "$f")"
+      [ -f "$f" ] || die "Compose file not found: $f"
+      add_compose_file_unique "$f"
+    done <<EOF_COMPOSE_FILES
+$(split_colon_list_to_lines "$COMPOSE_FILES")
+EOF_COMPOSE_FILES
+    return 0
+  fi
+
+  local base
+  base="$(detect_base_compose_file)" || die "No compose file found in project root: $ROOT_DIR"
+  add_compose_file_unique "$base"
+
+  local base_name
+  base_name="$(basename "$base")"
+
+  local f
+  case "$base_name" in
+    docker-compose.yaml|docker-compose.yml)
+      for f in docker-compose.offline.yaml docker-compose.offline.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      for f in docker-compose.override.yaml docker-compose.override.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      ;;
+    compose.yaml|compose.yml)
+      for f in compose.offline.yaml compose.offline.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      for f in compose.override.yaml compose.override.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      ;;
+  esac
+
+  for f in override.yaml override.yml; do
+    if [ -f "$ROOT_DIR/$f" ]; then
+      add_compose_file_unique "$ROOT_DIR/$f"
+    fi
+  done
+
+  if [ -n "${COMPOSE_OVERRIDE_FILES:-}" ]; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      f="$(resolve_path_from_root "$f")"
+      [ -f "$f" ] || die "Override file not found: $f"
+      add_compose_file_unique "$f"
+    done <<EOF_OVERRIDE_FILES
+$(split_colon_list_to_lines "$COMPOSE_OVERRIDE_FILES")
+EOF_OVERRIDE_FILES
+  fi
+}
+
+build_compose_args() {
+  COMPOSE_ARGS=()
+  local f
+  for f in "${COMPOSE_FILE_LIST[@]}"; do
+    COMPOSE_ARGS+=("-f" "$f")
+  done
+}
+
+compose() {
+  docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
+join_by_space_quoted() {
+  local out=""
+  local item
+  for item in "$@"; do
+    out="$out '$item'"
+  done
+  printf '%s' "$out"
+}
+
+semver_normalize() {
+  # Convert something like:
+  #   2.20.1-desktop.1 -> 2 20 1
+  #   Docker version 27.4.0 -> 27 4 0
+  local v="$1"
+  v="$(printf '%s' "$v" | sed 's/[^0-9.].*$//' | sed 's/^[^0-9]*//')"
+
+  local major minor patch
+  major="$(printf '%s' "$v" | awk -F. '{print $1}')"
+  minor="$(printf '%s' "$v" | awk -F. '{print $2}')"
+  patch="$(printf '%s' "$v" | awk -F. '{print $3}')"
+
+  [ -n "$major" ] || major=0
+  [ -n "$minor" ] || minor=0
+  [ -n "$patch" ] || patch=0
+
+  printf '%s %s %s' "$major" "$minor" "$patch"
+}
+
+version_ge() {
+  local current="$1"
+  local required="$2"
+
+  local cmaj cmin cpat rmaj rmin rpat
+  set -- $(semver_normalize "$current")
+  cmaj="$1"; cmin="$2"; cpat="$3"
+
+  set -- $(semver_normalize "$required")
+  rmaj="$1"; rmin="$2"; rpat="$3"
+
+  [ "$cmaj" -gt "$rmaj" ] && return 0
+  [ "$cmaj" -lt "$rmaj" ] && return 1
+
+  [ "$cmin" -gt "$rmin" ] && return 0
+  [ "$cmin" -lt "$rmin" ] && return 1
+
+  [ "$cpat" -ge "$rpat" ] && return 0
+  return 1
+}
+
+get_env_value() {
+  local key="$1"
+  local file="$ROOT_DIR/.env"
+
+  [ -f "$file" ] || return 0
+
+  awk -v key="$key" '
+    BEGIN { found = 0 }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      pos = index(line, "=")
+      if (pos == 0) next
+      k = substr(line, 1, pos - 1)
+      v = substr(line, pos + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (k != key) next
+
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+
+      if (v ~ /^".*"$/) {
+        v = substr(v, 2, length(v) - 2)
+      } else if (v ~ /^\047.*\047$/) {
+        v = substr(v, 2, length(v) - 2)
+      } else {
+        sub(/[[:space:]]+#.*$/, "", v)
+        gsub(/[[:space:]]+$/, "", v)
+      }
+
+      print v
+      found = 1
+      exit
+    }
+  ' "$file"
+}
+
+is_placeholder_value() {
+  local value="$1"
+
+  case "$value" in
+    ""|\
+    *your-domain.com*|\
+    *your-company.com*|\
+    *your-secure-password*|\
+    *your-db-root-password*|\
+    *your-db-password*|\
+    *change-this*|\
+    *changeme*|\
+    *CHANGE_ME*|\
+    *example.com*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+url_scheme() {
+  local url="$1"
+  printf '%s' "$url" | sed -n 's#^\([A-Za-z][A-Za-z0-9+.-]*\)://.*#\1#p'
+}
+
+url_host() {
+  local url="$1"
+  local no_scheme host
+  no_scheme="$(printf '%s' "$url" | sed 's#^[A-Za-z][A-Za-z0-9+.-]*://##')"
+  host="$(printf '%s' "$no_scheme" | sed 's#^[^@]*@##' | sed 's#/.*##' | sed 's/:.*//')"
+  printf '%s' "$host"
+}
+
+is_localhost_host() {
+  local host="$1"
+
+  case "$host" in
+    localhost|\
+    127.*|\
+    0.0.0.0|\
+    ::1|\
+    "[::1]")
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+validate_required_env() {
+  log "Checking .env required values..."
+
+  local env_file="$ROOT_DIR/.env"
+
+  if [ ! -f "$env_file" ]; then
+    fail_msg ".env file not found: $env_file"
+    if [ -f "$ROOT_DIR/.env.example" ]; then
+      warn "Create it first: cp .env.example .env"
+    fi
+    return 0
+  fi
+
+  ok ".env exists"
+
+  local required_keys="EXTERNAL_URL BROKER_WS_URL LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD LUCY_ADMIN_NAME DB_ROOT_PASSWORD DB_USERNAME DB_PASSWORD TZ"
+  local key value
+
+  for key in $required_keys; do
+    value="$(get_env_value "$key")"
+
+    if [ -z "$value" ]; then
+      fail_msg "$key is missing or empty in .env"
+      continue
+    fi
+
+    if is_placeholder_value "$value"; then
+      fail_msg "$key still looks like a placeholder: $value"
+      continue
+    fi
+
+    ok "$key is set"
+  done
+}
+
+validate_urls() {
+  log "Checking URL settings..."
+
+  local external_url broker_ws_url ext_scheme broker_scheme ext_host broker_host
+  external_url="$(get_env_value EXTERNAL_URL)"
+  broker_ws_url="$(get_env_value BROKER_WS_URL)"
+
+  if [ -z "$external_url" ]; then
+    fail_msg "EXTERNAL_URL is empty"
+    return 0
+  fi
+
+  ext_scheme="$(url_scheme "$external_url")"
+  ext_host="$(url_host "$external_url")"
+
+  case "$ext_scheme" in
+    http|https)
+      ok "EXTERNAL_URL scheme is $ext_scheme"
+      ;;
+    *)
+      fail_msg "EXTERNAL_URL must start with http:// or https://: $external_url"
+      ;;
+  esac
+
+  if [ -z "$ext_host" ]; then
+    fail_msg "EXTERNAL_URL hostname could not be parsed: $external_url"
+  elif is_localhost_host "$ext_host"; then
+    fail_msg "EXTERNAL_URL must not use localhost / loopback / 0.0.0.0: $external_url"
+  else
+    ok "EXTERNAL_URL hostname is $ext_host"
+  fi
+
+  if [ -z "$broker_ws_url" ]; then
+    fail_msg "BROKER_WS_URL is empty"
+    return 0
+  fi
+
+  broker_scheme="$(url_scheme "$broker_ws_url")"
+  broker_host="$(url_host "$broker_ws_url")"
+
+  case "$broker_scheme" in
+    ws|wss)
+      ok "BROKER_WS_URL scheme is $broker_scheme"
+      ;;
+    *)
+      fail_msg "BROKER_WS_URL must start with ws:// or wss://: $broker_ws_url"
+      ;;
+  esac
+
+  if [ "$ext_scheme" = "https" ] && [ "$broker_scheme" != "wss" ]; then
+    fail_msg "BROKER_WS_URL must use wss:// when EXTERNAL_URL uses https://"
+  elif [ "$ext_scheme" = "http" ] && [ "$broker_scheme" != "ws" ]; then
+    fail_msg "BROKER_WS_URL should use ws:// when EXTERNAL_URL uses http://"
+  else
+    ok "BROKER_WS_URL scheme matches EXTERNAL_URL"
+  fi
+
+  case "$broker_ws_url" in
+    */mqtt|*/mqtt/)
+      ok "BROKER_WS_URL path looks like /mqtt"
+      ;;
+    *)
+      warn "BROKER_WS_URL usually ends with /mqtt: $broker_ws_url"
+      ;;
+  esac
+
+  if [ -n "$broker_host" ] && is_localhost_host "$broker_host"; then
+    fail_msg "BROKER_WS_URL must not use localhost / loopback / 0.0.0.0: $broker_ws_url"
+  fi
+}
+
+validate_admin_name() {
+  log "Checking admin account constraints..."
+
+  local name
+  name="$(get_env_value LUCY_ADMIN_NAME)"
+
+  if [ "$name" = "admin" ]; then
+    ok "LUCY_ADMIN_NAME is admin"
+  else
+    fail_msg "LUCY_ADMIN_NAME must be admin. Current value: ${name:-<empty>}"
+  fi
+}
+
+validate_resources() {
+  if [ "$SKIP_RESOURCE_CHECK" = "1" ]; then
+    log "Skipping resource checks by request."
+    return 0
+  fi
+
+  log "Checking system resources..."
+
+  local ram_mb=""
+  if command -v free >/dev/null 2>&1; then
+    ram_mb="$(free -m | awk '/^Mem:/ { print $2 }')"
+  elif command -v sysctl >/dev/null 2>&1; then
+    ram_mb="$(sysctl -n hw.memsize 2>/dev/null | awk '{ printf "%d", $1 / 1024 / 1024 }' || true)"
+  fi
+
+  if [ -n "$ram_mb" ]; then
+    if [ "$ram_mb" -lt "$MIN_RAM_MB" ]; then
+      fail_msg "RAM is ${ram_mb}MB. Minimum required: ${MIN_RAM_MB}MB"
+    else
+      ok "RAM is ${ram_mb}MB"
+    fi
+  else
+    warn "Could not detect RAM size"
+  fi
+
+  local disk_mb=""
+  disk_mb="$(df -Pk "$ROOT_DIR" 2>/dev/null | awk 'NR==2 { printf "%d", $4 / 1024 }' || true)"
+
+  if [ -n "$disk_mb" ]; then
+    if [ "$disk_mb" -lt "$MIN_DISK_MB" ]; then
+      fail_msg "Available disk is ${disk_mb}MB. Minimum required: ${MIN_DISK_MB}MB"
+    else
+      ok "Available disk is ${disk_mb}MB"
+    fi
+  else
+    warn "Could not detect available disk space"
+  fi
+}
+
+validate_docker_versions() {
+  log "Checking Docker and Docker Compose versions..."
+
+  local docker_version compose_version
+  docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+  compose_version="$(docker compose version --short 2>/dev/null || docker compose version 2>/dev/null | sed -n 's/.*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1 || true)"
+
+  if [ -z "$docker_version" ]; then
+    fail_msg "Could not detect Docker Server version"
+  elif version_ge "$docker_version" "$MIN_DOCKER_VERSION"; then
+    ok "Docker version $docker_version >= $MIN_DOCKER_VERSION"
+  else
+    fail_msg "Docker version $docker_version is lower than required $MIN_DOCKER_VERSION"
+  fi
+
+  if [ -z "$compose_version" ]; then
+    fail_msg "Could not detect Docker Compose version"
+  elif version_ge "$compose_version" "$MIN_COMPOSE_VERSION"; then
+    ok "Docker Compose version $compose_version >= $MIN_COMPOSE_VERSION"
+  else
+    fail_msg "Docker Compose version $compose_version is lower than required $MIN_COMPOSE_VERSION"
+  fi
+}
+
+validate_license() {
+  log "Checking license file..."
+
+  local license="$ROOT_DIR/license/license.json"
+
+  if [ ! -f "$license" ]; then
+    fail_msg "License file not found: $license"
+    return 0
+  fi
+
+  if [ ! -s "$license" ]; then
+    fail_msg "License file is empty: $license"
+    return 0
+  fi
+
+  ok "License file exists"
+
+  if command -v jq >/dev/null 2>&1; then
+    if jq empty "$license" >/dev/null 2>&1; then
+      ok "License file is valid JSON according to jq"
+    else
+      fail_msg "License file is not valid JSON according to jq"
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if python3 -m json.tool "$license" >/dev/null 2>&1; then
+      ok "License file is valid JSON according to python3"
+    else
+      fail_msg "License file is not valid JSON according to python3"
+    fi
+  elif command -v python >/dev/null 2>&1; then
+    if python -m json.tool "$license" >/dev/null 2>&1; then
+      ok "License file is valid JSON according to python"
+    else
+      fail_msg "License file is not valid JSON according to python"
+    fi
+  else
+    warn "jq/python not found. Checked only existence and non-empty license file."
+  fi
+}
+
+validate_certificates() {
+  log "Checking SSL certificate files..."
+
+  local cert="$ROOT_DIR/nginx/certs/server.crt"
+  local key="$ROOT_DIR/nginx/certs/server.key"
+  local external_url host
+
+  external_url="$(get_env_value EXTERNAL_URL)"
+  host="$(url_host "$external_url")"
+
+  if [ ! -f "$cert" ] && [ ! -f "$key" ]; then
+    ok "No nginx certificate files found. init-secrets is expected to generate self-signed certs on first boot."
+    return 0
+  fi
+
+  if [ -f "$cert" ] && [ ! -f "$key" ]; then
+    fail_msg "server.crt exists but server.key is missing"
+    return 0
+  fi
+
+  if [ ! -f "$cert" ] && [ -f "$key" ]; then
+    fail_msg "server.key exists but server.crt is missing"
+    return 0
+  fi
+
+  ok "Certificate and key both exist"
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    warn "openssl not found. Skipping certificate details check."
+    return 0
+  fi
+
+  if openssl x509 -in "$cert" -noout >/dev/null 2>&1; then
+    ok "server.crt is parseable by openssl"
+  else
+    fail_msg "server.crt is not parseable by openssl"
+    return 0
+  fi
+
+  if openssl x509 -in "$cert" -checkend 0 -noout >/dev/null 2>&1; then
+    ok "server.crt is not expired"
+  else
+    fail_msg "server.crt is expired"
+  fi
+
+  if [ -n "$host" ]; then
+    local cert_text
+    cert_text="$(openssl x509 -in "$cert" -noout -subject -ext subjectAltName 2>/dev/null || true)"
+
+    if printf '%s\n' "$cert_text" | grep -F "$host" >/dev/null 2>&1; then
+      ok "server.crt appears to include EXTERNAL_URL hostname: $host"
+    else
+      if [ "$ALLOW_CERT_HOST_MISMATCH" = "1" ]; then
+        warn "server.crt does not appear to include EXTERNAL_URL hostname, but allowed: $host"
+      else
+        fail_msg "server.crt does not appear to include EXTERNAL_URL hostname: $host"
+      fi
+    fi
+  fi
+}
+
+validate_compose_config() {
+  log "Checking Docker Compose config..."
+
+  if compose config --quiet; then
+    ok "docker compose config --quiet succeeded"
+  else
+    fail_msg "docker compose config --quiet failed"
+  fi
+}
+
+get_compose_images() {
+  compose config --images 2>/dev/null | awk 'NF > 0' | sort -u
+}
+
+validate_local_images() {
+  if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
+    log "Skipping local image checks by request."
+    return 0
+  fi
+
+  log "Checking that compose images exist locally..."
+
+  local img count
+  count=0
+
+  while IFS= read -r img; do
+    [ -n "$img" ] || continue
+    count=$((count + 1))
+
+    if docker image inspect "$img" >/dev/null 2>&1; then
+      ok "Local image exists: $img"
+    else
+      fail_msg "Local image missing: $img"
+    fi
+  done <<EOF_IMAGES
+$(get_compose_images)
+EOF_IMAGES
+
+  if [ "$count" -eq 0 ]; then
+    warn "No images found in docker compose config --images"
+  fi
+}
+
+detect_target_platform() {
+  if [ -n "${TARGET_PLATFORM:-}" ]; then
+    printf '%s' "$TARGET_PLATFORM"
+    return 0
+  fi
+
+  if [ -n "${PLATFORM:-}" ]; then
+    printf '%s' "$PLATFORM"
+    return 0
+  fi
+
+  local arch
+  arch="$(uname -m 2>/dev/null || true)"
+
+  case "$arch" in
+    x86_64|amd64)
+      printf '%s' "linux/amd64"
+      ;;
+    aarch64|arm64)
+      printf '%s' "linux/arm64"
+      ;;
+    armv7l)
+      printf '%s' "linux/arm/v7"
+      ;;
+    *)
+      printf '%s' "linux/$arch"
+      ;;
+  esac
+}
+
+image_platforms() {
+  local image="$1"
+  local direct=""
+  local manifests=""
+
+  direct="$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}' 2>/dev/null || true)"
+
+  if [ -n "$direct" ] && [ "$direct" != "/" ]; then
+    printf '%s\n' "$direct"
+    return 0
+  fi
+
+  # Docker Desktop / containerd image store may keep image index metadata.
+  manifests="$(docker image inspect "$image" --format '{{range .Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+
+  if [ -n "$manifests" ]; then
+    printf '%s\n' "$manifests" | awk 'NF > 0'
+    return 0
+  fi
+
+  # Fallback when Go template cannot access manifests.
+  # If jq is available, try parsing the raw JSON.
+  if command -v jq >/dev/null 2>&1; then
+    docker image inspect "$image" 2>/dev/null \
+      | jq -r '.[0] as $i
+          | if ($i.Os // "") != "" and ($i.Architecture // "") != "" then
+              "\($i.Os)/\($i.Architecture)"
+            elif ($i.Manifests // [] | length) > 0 then
+              $i.Manifests[] | "\(.Platform.OS)/\(.Platform.Architecture)"
+            else
+              empty
+            end' 2>/dev/null \
+      | awk 'NF > 0'
+  fi
+}
+
+can_save_image_for_platform() {
+  local image="$1"
+  local platform="$2"
+  local tmp_dir tmp_file
+
+  if ! docker save --help 2>/dev/null | grep -q -- '--platform'; then
+    return 2
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  tmp_file="$tmp_dir/test.tar"
+
+  if docker save --platform "$platform" "$image" -o "$tmp_file" >/dev/null 2>&1; then
+    rm -rf "$tmp_dir"
+    return 0
+  fi
+
+  rm -rf "$tmp_dir"
+  return 1
+}
+
+validate_image_architectures() {
+  if [ "$SKIP_ARCH_CHECK" = "1" ]; then
+    log "Skipping image architecture checks by request."
+    return 0
+  fi
+
+  TARGET_PLATFORM_RESOLVED="$(detect_target_platform)"
+
+  log "Checking Docker image architectures..."
+  ok "Expected image platform: $TARGET_PLATFORM_RESOLVED"
+
+  local img platforms matched p count save_status
+  count=0
+
+  while IFS= read -r img; do
+    [ -n "$img" ] || continue
+    count=$((count + 1))
+
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+      fail_msg "Cannot check architecture because image is missing: $img"
+      continue
+    fi
+
+    platforms="$(image_platforms "$img" | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+
+    if [ -z "$platforms" ]; then
+      # Many multi-arch index images show empty .Os/.Architecture in Docker Desktop.
+      # In that case, the most reliable local check is whether docker can save
+      # the requested platform variant from the local image store.
+      can_save_image_for_platform "$img" "$TARGET_PLATFORM_RESOLVED"
+      save_status="$?"
+
+      if [ "$save_status" -eq 0 ]; then
+        ok "Image can be saved for target platform: $img [$TARGET_PLATFORM_RESOLVED]"
+      elif [ "$save_status" -eq 2 ]; then
+        warn "Could not determine image architecture for $img, and docker save --platform is unavailable."
+      else
+        fail_msg "Image cannot be saved for target platform: $img, expected $TARGET_PLATFORM_RESOLVED"
+      fi
+
+      continue
+    fi
+
+    matched=0
+    for p in $platforms; do
+      if [ "$p" = "$TARGET_PLATFORM_RESOLVED" ]; then
+        matched=1
+      fi
+    done
+
+    if [ "$matched" -eq 1 ]; then
+      ok "Image platform matches: $img [$platforms]"
+    else
+      # Some images are inspected as an index even though the requested platform
+      # exists locally. Confirm with docker save --platform before failing.
+      can_save_image_for_platform "$img" "$TARGET_PLATFORM_RESOLVED"
+      save_status="$?"
+
+      if [ "$save_status" -eq 0 ]; then
+        ok "Image can be saved for target platform: $img [$TARGET_PLATFORM_RESOLVED; inspect=$platforms]"
+      else
+        fail_msg "Image platform mismatch: $img [$platforms], expected $TARGET_PLATFORM_RESOLVED"
+      fi
+    fi
+  done <<EOF_ARCH_IMAGES
+$(get_compose_images)
+EOF_ARCH_IMAGES
+
+  if [ "$count" -eq 0 ]; then
+    warn "No images found in docker compose config --images"
+  fi
+}
+
+get_published_ports() {
+  # Parses normalized docker compose config long-form ports.
+  # Expected lines often look like:
+  #   published: "80"
+  #   published: "443"
+  compose config 2>/dev/null | awk '
+    /published:[[:space:]]*/ {
+      line = $0
+      sub(/^.*published:[[:space:]]*/, "", line)
+      gsub(/"/, "", line)
+      gsub(/\047/, "", line)
+      gsub(/[[:space:]]/, "", line)
+      if (line != "") print line
+    }
+  ' | sed 's#/.*$##' | sort -n | uniq
+}
+
+is_port_in_use() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 2
+}
+
+validate_ports() {
+  if [ "$SKIP_PORT_CHECK" = "1" ]; then
+    log "Skipping port checks by request."
+    return 0
+  fi
+
+  log "Checking host port conflicts..."
+
+  local ports=""
+  ports="$(get_published_ports || true)"
+
+  if [ -z "$ports" ]; then
+    warn "No published ports detected from compose config"
+    return 0
+  fi
+
+  local port status
+  for port in $ports; do
+    case "$port" in
+      ""|*[!0-9]*)
+        warn "Skipping non-numeric published port: $port"
+        continue
+        ;;
+    esac
+
+    if is_port_in_use "$port"; then
+      fail_msg "Host port is already in use: $port"
+    else
+      status=$?
+      if [ "$status" -eq 2 ]; then
+        warn "Could not check port $port because ss/lsof/netstat is unavailable"
+      else
+        ok "Host port is available: $port"
+      fi
+    fi
+  done
+}
+
+validate_directories() {
+  log "Checking required paths and writable directories..."
+
+  local dirs="postgres/data git/data secrets license nginx/certs"
+
+  local d full
+  for d in $dirs; do
+    full="$ROOT_DIR/$d"
+
+    if [ -d "$full" ]; then
+      if [ -w "$full" ]; then
+        ok "Directory exists and is writable: $d"
+      else
+        fail_msg "Directory exists but is not writable: $d"
+      fi
+    else
+      local parent
+      parent="$(dirname "$full")"
+      if [ -d "$parent" ] && [ -w "$parent" ]; then
+        warn "Directory does not exist yet but parent is writable: $d"
+      else
+        fail_msg "Directory does not exist and parent is not writable: $d"
+      fi
+    fi
+  done
+
+  if command -v id >/dev/null 2>&1; then
+    local host_uid host_gid env_uid env_gid
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    env_uid="$(get_env_value HOST_UID)"
+    env_gid="$(get_env_value HOST_GID)"
+
+    if [ -z "$env_uid" ]; then
+      warn "HOST_UID is not set. Recommended on Linux: HOST_UID=$host_uid"
+    else
+      ok "HOST_UID is set: $env_uid"
+    fi
+
+    if [ -z "$env_gid" ]; then
+      warn "HOST_GID is not set. Recommended on Linux: HOST_GID=$host_gid"
+    else
+      ok "HOST_GID is set: $env_gid"
+    fi
+  fi
+}
+
+hash_command() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "shasum -a 256"
+  else
+    printf '%s' ""
+  fi
+}
+
+calculate_immutable_hash() {
+  local tmp
+  tmp="$(mktemp)"
+
+  local key value
+  for key in $IMMUTABLE_KEYS; do
+    value="$(get_env_value "$key")"
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  done
+
+  local cmd
+  cmd="$(hash_command)"
+
+  if [ -z "$cmd" ]; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  # shellcheck disable=SC2086
+  $cmd "$tmp" | awk '{ print $1 }'
+  rm -f "$tmp"
+}
+
+is_install_initialized() {
+  # If any persisted runtime data exists, assume this installation has been initialized.
+  [ -f "$ROOT_DIR/secrets/secrets.env" ] && return 0
+  [ -d "$ROOT_DIR/postgres/data" ] && [ "$(find "$ROOT_DIR/postgres/data" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" != "" ] && return 0
+  [ -d "$ROOT_DIR/git/data" ] && [ "$(find "$ROOT_DIR/git/data" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" != "" ] && return 0
+  return 1
+}
+
+validate_immutable_env_lock() {
+  log "Checking immutable .env lock..."
+
+  local state_dir="$ROOT_DIR/.install-state"
+  local lock_file="$state_dir/immutable.env.sha256"
+
+  local current_hash
+  current_hash="$(calculate_immutable_hash || true)"
+
+  if [ -z "$current_hash" ]; then
+    warn "sha256sum/shasum not found. Skipping immutable .env lock."
+    return 0
+  fi
+
+  if [ ! -f "$lock_file" ]; then
+    ok "No immutable .env lock yet. It will be created only after all preflight checks pass."
+    return 0
+  fi
+
+  local locked_hash
+  locked_hash="$(cat "$lock_file" | head -n 1 | tr -d '[:space:]')"
+
+  if [ "$current_hash" = "$locked_hash" ]; then
+    ok "Immutable .env values match existing lock"
+  else
+    if [ "$ALLOW_IMMUTABLE_CHANGE" = "1" ]; then
+      warn "Immutable .env values changed, but allowed by --allow-immutable-change"
+    elif ! is_install_initialized; then
+      warn "Immutable .env lock exists but installation data is not initialized yet. The lock will be refreshed after successful preflight."
+    else
+      fail_msg "Immutable .env values changed after installation initialization. Affected keys: $IMMUTABLE_KEYS"
+    fi
+  fi
+}
+
+write_immutable_env_lock_after_success() {
+  local state_dir="$ROOT_DIR/.install-state"
+  local lock_file="$state_dir/immutable.env.sha256"
+
+  local current_hash
+  current_hash="$(calculate_immutable_hash || true)"
+
+  if [ -z "$current_hash" ]; then
+    return 0
+  fi
+
+  mkdir -p "$state_dir"
+
+  if [ ! -f "$lock_file" ]; then
+    printf '%s\n' "$current_hash" > "$lock_file"
+    ok "Immutable .env lock created: .install-state/immutable.env.sha256"
+    return 0
+  fi
+
+  local locked_hash
+  locked_hash="$(cat "$lock_file" | head -n 1 | tr -d '[:space:]')"
+
+  if [ "$current_hash" != "$locked_hash" ] && ! is_install_initialized; then
+    printf '%s\n' "$current_hash" > "$lock_file"
+    ok "Immutable .env lock refreshed before first initialization"
+  fi
+}
+
+run_compose_up() {
+  log "Starting Docker Compose services..."
+  compose up -d --pull never --no-build
+}
+
+parse_args() {
+  COMPOSE_UP=0
+  ALLOW_IMMUTABLE_CHANGE=0
+  ALLOW_CERT_HOST_MISMATCH=0
+  SKIP_PORT_CHECK=0
+  SKIP_IMAGE_CHECK=0
+  SKIP_ARCH_CHECK=0
+  SKIP_RESOURCE_CHECK=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        echo "preflight-onprem.sh $SCRIPT_VERSION"
+        exit 0
+        ;;
+      --compose-up)
+        COMPOSE_UP=1
+        ;;
+      --allow-immutable-change)
+        ALLOW_IMMUTABLE_CHANGE=1
+        ;;
+      --allow-cert-host-mismatch)
+        ALLOW_CERT_HOST_MISMATCH=1
+        ;;
+      --skip-port-check)
+        SKIP_PORT_CHECK=1
+        ;;
+      --skip-image-check)
+        SKIP_IMAGE_CHECK=1
+        ;;
+      --skip-arch-check)
+        SKIP_ARCH_CHECK=1
+        ;;
+      --skip-resource-check)
+        SKIP_RESOURCE_CHECK=1
+        ;;
+      *)
+        die "Unknown argument: $1
+
+Run './scripts/preflight-onprem.sh --help' for usage."
+        ;;
+    esac
+    shift
+  done
+}
+
+main() {
+  parse_args "$@"
+
+  FAILURES=0
+
+  require_cmd docker
+  require_cmd awk
+  require_cmd sed
+  require_cmd sort
+  require_cmd grep
+
+  docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
+  docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
+
+  local sdir
+  sdir="$(script_dir)"
+
+  ROOT_DIR="$(resolve_project_root "$sdir")"
+  cd "$ROOT_DIR"
+
+  detect_compose_files
+  build_compose_args
+
+  log "Project root: $ROOT_DIR"
+  log "Compose files, in merge order:$(join_by_space_quoted "${COMPOSE_FILE_LIST[@]}")"
+
+  validate_docker_versions
+  validate_resources
+  validate_required_env
+  validate_urls
+  validate_admin_name
+  validate_license
+  validate_certificates
+  validate_directories
+  validate_compose_config
+  validate_ports
+  validate_local_images
+  validate_image_architectures
+  validate_immutable_env_lock
+
+  if [ "$FAILURES" -gt 0 ]; then
+    die "Preflight failed with $FAILURES failure(s). Fix them before running docker compose up."
+  fi
+
+  log "Preflight passed."
+  write_immutable_env_lock_after_success
+
+  if [ "$COMPOSE_UP" = "1" ]; then
+    run_compose_up
+  else
+    cat <<EOF
+
+Next step:
+  cd "$ROOT_DIR"
+  docker compose up -d --pull never --no-build
+
+Or run:
+  ./scripts/preflight-onprem.sh --compose-up
+
+EOF
+  fi
+}
+
+main "$@"
