@@ -566,6 +566,18 @@ id -u
 id -g
 ```
 
+`preflight-onprem.sh`는 runtime 디렉터리를 이 UID/GID 기준으로 준비합니다.
+단, 다음 자동 생성 산출물은 `root:root`여도 허용합니다.
+
+```text
+git/data/gitea/.admin-created
+secrets/secrets.env
+nginx/certs/server.crt
+nginx/certs/server.key
+```
+
+이 목록 밖의 root-owned 파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
+
 ---
 
 # 6. 최초 실행 후 변경하면 안 되는 값

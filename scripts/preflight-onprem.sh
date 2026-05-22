@@ -30,6 +30,7 @@ MIN_RAM_MB="4096"
 MIN_DISK_MB="10240"
 
 IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
+ROOT_OWNED_GENERATED_ARTIFACTS="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
 
 show_help() {
   cat <<'EOF'
@@ -334,13 +335,58 @@ ensure_directory_exists() {
   return 0
 }
 
-first_owner_mismatch() {
+path_is_under_directory() {
+  local path="$1"
+  local dir="$2"
+
+  case "$path" in
+    "$dir"|"$dir"/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+path_is_root_owned() {
+  local path="$1"
+  local first
+
+  first="$(find "$path" -prune -user 0 -group 0 -print -quit 2>/dev/null || true)"
+  [ -n "$first" ]
+}
+
+log_allowed_root_owned_generated_artifacts() {
+  local dir="$1"
+  local uid="$2"
+  local gid="$3"
+  local rel full mismatch
+
+  for rel in $ROOT_OWNED_GENERATED_ARTIFACTS; do
+    full="$ROOT_DIR/$rel"
+    [ -e "$full" ] || continue
+    path_is_under_directory "$full" "$dir" || continue
+    path_is_root_owned "$full" || continue
+
+    mismatch="$(find "$full" -prune \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
+    if [ -n "$mismatch" ]; then
+      info_msg "Allowed root-owned generated artifact: $rel"
+    fi
+  done
+}
+
+first_disallowed_owner_mismatch() {
   local path="$1"
   local uid="$2"
   local gid="$3"
   local first
 
-  first="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
+  first="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) \
+    ! \( -path "$ROOT_DIR/git/data/gitea/.admin-created" -user 0 -group 0 \) \
+    ! \( -path "$ROOT_DIR/secrets/secrets.env" -user 0 -group 0 \) \
+    ! \( -path "$ROOT_DIR/nginx/certs/server.crt" -user 0 -group 0 \) \
+    ! \( -path "$ROOT_DIR/nginx/certs/server.key" -user 0 -group 0 \) \
+    -print -quit 2>/dev/null || true)"
   printf '%s' "$first"
 }
 
@@ -374,7 +420,8 @@ prepare_host_owned_directory() {
   ensure_directory_exists "$rel" || return 0
 
   info_msg "Checking runtime directory ownership: $rel"
-  mismatch="$(first_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
+  log_allowed_root_owned_generated_artifacts "$full" "$RUNTIME_UID" "$RUNTIME_GID"
+  mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
   if [ -n "$mismatch" ]; then
     info_msg "Preparing ownership: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
     if chown -R "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
