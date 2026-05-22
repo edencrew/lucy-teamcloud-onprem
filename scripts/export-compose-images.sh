@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.5.0"
 
 show_help() {
   cat <<'EOF'
@@ -56,6 +56,10 @@ WHAT IT DOES
   9. Saves pulled and built images into <project-root>/images/*.tar.gz.
   10. Creates checksum and image-list files.
 
+  With --update-service, only the selected service image(s) are pulled/built
+  and saved into the archive. Manifest files are still written for the full
+  merged compose config.
+
 USAGE
   ./scripts/export-compose-images.sh [OPTIONS]
 
@@ -65,6 +69,13 @@ OPTIONS
 
   -v, --version
       Show script version and exit.
+
+  --update-service SERVICE
+      Partial update mode. Pull/build and save only SERVICE's final image from
+      the merged compose config.
+
+      This option may be repeated:
+        ./scripts/export-compose-images.sh --update-service tc-fe --update-service auth-fe
 
 ENVIRONMENT VARIABLES
   PROJECT_ROOT
@@ -158,6 +169,9 @@ EXAMPLES
   Use extra override files:
     COMPOSE_OVERRIDE_FILES="docker-compose.customer.yml" ./scripts/export-compose-images.sh
 
+  Export only selected service image(s) while keeping full stack manifests:
+    ./scripts/export-compose-images.sh --update-service tc-fe
+
   Change output file:
     OUTPUT_NAME=lucy-onprem-images.tar.gz ./scripts/export-compose-images.sh
 
@@ -170,6 +184,7 @@ OUTPUT FILES
     <project-name>-images-linux-amd64.tar.gz
     <project-name>-images-linux-amd64.tar.gz.sha256
     <project-name>-images-linux-amd64.images.txt
+    <project-name>-images-linux-amd64.archive-images.txt
     <project-name>-images-linux-amd64.explicit-images.txt
     <project-name>-images-linux-amd64.services.txt
 
@@ -185,6 +200,12 @@ NOTES
 
   - That means image versions are taken from the final merged compose config.
     If an override file changes an image tag, the override tag is used.
+
+  - With --update-service:
+      * The tar.gz contains only the selected service image(s).
+      * *.images.txt and *.services.txt still describe the full stack.
+      * *.archive-images.txt lists only images actually included in tar.gz.
+      * The offline server is expected to already have unchanged images.
 
   - Services using build: are built locally by:
       docker compose build <service...>
@@ -441,6 +462,9 @@ get_service_meta() {
     function flush() {
       if (svc != "") {
         print svc "\t" img "\t" build
+        svc = ""
+        img = ""
+        build = 0
       }
     }
 
@@ -458,6 +482,7 @@ get_service_meta() {
 
     in_services && /^[^[:space:]]/ {
       flush()
+      in_services = 0
       exit
     }
 
@@ -492,6 +517,21 @@ get_service_meta() {
       }
     }
   '
+}
+
+service_exists_in_meta() {
+  local service="$1"
+  awk -F '\t' -v svc="$service" '$1 == svc { found = 1; exit } END { exit found ? 0 : 1 }' "$SERVICE_META_FILE"
+}
+
+service_image_from_meta() {
+  local service="$1"
+  awk -F '\t' -v svc="$service" '$1 == svc { print $2; exit }' "$SERVICE_META_FILE"
+}
+
+service_has_build_from_meta() {
+  local service="$1"
+  awk -F '\t' -v svc="$service" '$1 == svc { print $3; exit }' "$SERVICE_META_FILE"
 }
 
 image_platform() {
@@ -529,6 +569,8 @@ sha256_file() {
 }
 
 parse_args() {
+  UPDATE_SERVICES=()
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -h|--help)
@@ -539,12 +581,28 @@ parse_args() {
         echo "export-compose-images.sh $SCRIPT_VERSION"
         exit 0
         ;;
+      --update-service)
+        shift
+        [ "$#" -gt 0 ] || die "--update-service requires SERVICE."
+        [ -n "$1" ] || die "--update-service requires non-empty SERVICE."
+        if ! array_contains "$1" "${UPDATE_SERVICES[@]}"; then
+          UPDATE_SERVICES+=("$1")
+        fi
+        ;;
+      --update-service=*)
+        local service="${1#*=}"
+        [ -n "$service" ] || die "--update-service requires non-empty SERVICE."
+        if ! array_contains "$service" "${UPDATE_SERVICES[@]}"; then
+          UPDATE_SERVICES+=("$service")
+        fi
+        ;;
       *)
         die "Unknown argument: $1
 
 Run './scripts/export-compose-images.sh --help' for usage."
         ;;
     esac
+    shift
   done
 }
 
@@ -589,42 +647,57 @@ main() {
   OUTPUT_DIR="$(resolve_path_from_root "$OUTPUT_DIR")"
   OUTPUT_NAME="${OUTPUT_NAME:-${project_name}-images-${TARGET_PLATFORM_RESOLVED//\//-}.tar.gz}"
   OUTPUT_PATH="$OUTPUT_DIR/$OUTPUT_NAME"
+  OUTPUT_BASE="${OUTPUT_NAME%.tar.gz}"
 
   mkdir -p "$OUTPUT_DIR"
 
   log "Reading service metadata from merged compose config..."
-  SERVICE_META_FILE="$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.services.txt"
+  SERVICE_META_FILE="$OUTPUT_DIR/$OUTPUT_BASE.services.txt"
   get_service_meta > "$SERVICE_META_FILE"
 
-  BUILD_SERVICES=()
-  BUILD_IMAGES=()
+  ALL_BUILD_SERVICES=()
+  ALL_BUILD_IMAGES=()
 
   local svc meta_img has_build
   while IFS="$(printf '\t')" read -r svc meta_img has_build; do
     [ -n "$svc" ] || continue
     if [ "$has_build" = "1" ]; then
-      BUILD_SERVICES+=("$svc")
+      if ! array_contains "$svc" "${ALL_BUILD_SERVICES[@]}"; then
+        ALL_BUILD_SERVICES+=("$svc")
+      fi
       if [ -n "$meta_img" ]; then
-        BUILD_IMAGES+=("$meta_img")
+        if ! array_contains "$meta_img" "${ALL_BUILD_IMAGES[@]}"; then
+          ALL_BUILD_IMAGES+=("$meta_img")
+        fi
       fi
     fi
   done < "$SERVICE_META_FILE"
 
-  if [ "${#BUILD_SERVICES[@]}" -gt 0 ]; then
+  if [ "${#ALL_BUILD_SERVICES[@]}" -gt 0 ]; then
     log "Build services detected:"
     local i
-    for i in "${BUILD_SERVICES[@]}"; do
+    for i in "${ALL_BUILD_SERVICES[@]}"; do
       printf '  %s\n' "$i"
     done
 
-    if [ "${#BUILD_IMAGES[@]}" -gt 0 ]; then
+    if [ "${#ALL_BUILD_IMAGES[@]}" -gt 0 ]; then
       log "Images produced by build services. These will not be pulled:"
-      for i in "${BUILD_IMAGES[@]}"; do
+      for i in "${ALL_BUILD_IMAGES[@]}"; do
         printf '  %s\n' "$i"
       done
     fi
   else
     log "No build services detected."
+  fi
+
+  PARTIAL_EXPORT=0
+  if [ "${#UPDATE_SERVICES[@]}" -gt 0 ]; then
+    PARTIAL_EXPORT=1
+    log "Partial image update services requested:"
+    for svc in "${UPDATE_SERVICES[@]}"; do
+      printf '  %s\n' "$svc"
+      service_exists_in_meta "$svc" || die "Service from --update-service is not present in compose config: $svc"
+    done
   fi
 
   log "Reading image list from merged compose config..."
@@ -639,14 +712,71 @@ EOF_EXPLICIT_IMAGES
   if [ "${#EXPLICIT_IMAGES[@]}" -eq 0 ]; then
     warn "No explicit image: entries found in compose config."
   else
-    printf '%s\n' "${EXPLICIT_IMAGES[@]}" > "$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.explicit-images.txt"
+    printf '%s\n' "${EXPLICIT_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.explicit-images.txt"
     log "Explicit image list:"
     printf '  %s\n' "${EXPLICIT_IMAGES[@]}"
   fi
 
+  BUILD_SERVICES=()
+  BUILD_IMAGES=()
+  SAVE_IMAGES=()
+
+  if [ "$PARTIAL_EXPORT" = "1" ]; then
+    log "Preparing partial archive image list from selected services..."
+    for svc in "${UPDATE_SERVICES[@]}"; do
+      meta_img="$(service_image_from_meta "$svc")"
+      has_build="$(service_has_build_from_meta "$svc")"
+
+      [ -n "$meta_img" ] || die "Selected service does not define an image in compose config: $svc"
+
+      if ! array_contains "$meta_img" "${SAVE_IMAGES[@]}"; then
+        SAVE_IMAGES+=("$meta_img")
+      fi
+
+      if [ "$has_build" = "1" ]; then
+        if ! array_contains "$svc" "${BUILD_SERVICES[@]}"; then
+          BUILD_SERVICES+=("$svc")
+        fi
+        if ! array_contains "$meta_img" "${BUILD_IMAGES[@]}"; then
+          BUILD_IMAGES+=("$meta_img")
+        fi
+      fi
+    done
+  else
+    BUILD_SERVICES=("${ALL_BUILD_SERVICES[@]}")
+    BUILD_IMAGES=("${ALL_BUILD_IMAGES[@]}")
+  fi
+
   log "Pulling registry images..."
+  PULL_IMAGES=()
   local img
-  for img in "${EXPLICIT_IMAGES[@]}"; do
+  if [ "$PARTIAL_EXPORT" = "1" ]; then
+    for img in "${SAVE_IMAGES[@]}"; do
+      if array_contains "$img" "${BUILD_IMAGES[@]}"; then
+        log "Skipping pull for selected build image: $img"
+        continue
+      fi
+      if ! array_contains "$img" "${PULL_IMAGES[@]}"; then
+        PULL_IMAGES+=("$img")
+      fi
+    done
+  else
+    for img in "${EXPLICIT_IMAGES[@]}"; do
+      if array_contains "$img" "${BUILD_IMAGES[@]}"; then
+        log "Skipping pull for build image: $img"
+        continue
+      fi
+      if ! array_contains "$img" "${PULL_IMAGES[@]}"; then
+        PULL_IMAGES+=("$img")
+      fi
+    done
+  fi
+
+  if [ "${#PULL_IMAGES[@]}" -eq 0 ]; then
+    log "No registry images selected for pull."
+  fi
+
+  for img in "${PULL_IMAGES[@]}"; do
     if array_contains "$img" "${BUILD_IMAGES[@]}"; then
       log "Skipping pull for build image: $img"
       continue
@@ -685,46 +815,60 @@ EOF_PULL_ERROR
     log "Skipping compose build. No build services found."
   fi
 
-  log "Collecting images to save..."
-  SAVE_IMAGES=()
+  if [ "$PARTIAL_EXPORT" = "0" ]; then
+    log "Collecting images to save..."
+    SAVE_IMAGES=()
 
-  for img in "${EXPLICIT_IMAGES[@]}"; do
-    if ! array_contains "$img" "${SAVE_IMAGES[@]}"; then
-      SAVE_IMAGES+=("$img")
-    fi
-  done
+    for img in "${EXPLICIT_IMAGES[@]}"; do
+      if ! array_contains "$img" "${SAVE_IMAGES[@]}"; then
+        SAVE_IMAGES+=("$img")
+      fi
+    done
 
-  SERVICES=()
-  while IFS= read -r svc; do
-    [ -n "$svc" ] || continue
-    SERVICES+=("$svc")
-  done <<EOF_SERVICES
+    SERVICES=()
+    while IFS= read -r svc; do
+      [ -n "$svc" ] || continue
+      SERVICES+=("$svc")
+    done <<EOF_SERVICES
 $(get_services)
 EOF_SERVICES
 
-  local candidate
-  for svc in "${SERVICES[@]}"; do
-    for candidate in \
-      "${project_name}-${svc}" \
-      "${project_name}-${svc}:latest" \
-      "${project_name}_${svc}" \
-      "${project_name}_${svc}:latest"
-    do
-      if image_exists "$candidate"; then
-        if ! array_contains "$candidate" "${SAVE_IMAGES[@]}"; then
-          SAVE_IMAGES+=("$candidate")
+    local candidate
+    for svc in "${SERVICES[@]}"; do
+      for candidate in \
+        "${project_name}-${svc}" \
+        "${project_name}-${svc}:latest" \
+        "${project_name}_${svc}" \
+        "${project_name}_${svc}:latest"
+      do
+        if image_exists "$candidate"; then
+          if ! array_contains "$candidate" "${SAVE_IMAGES[@]}"; then
+            SAVE_IMAGES+=("$candidate")
+          fi
         fi
-      fi
+      done
     done
-  done
+  fi
 
   if [ "${#SAVE_IMAGES[@]}" -eq 0 ]; then
     die "No images found to save."
   fi
 
-  printf '%s\n' "${SAVE_IMAGES[@]}" > "$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.images.txt"
+  if [ "$PARTIAL_EXPORT" = "1" ]; then
+    printf '%s\n' "${EXPLICIT_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.images.txt"
+  else
+    printf '%s\n' "${SAVE_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.images.txt"
+  fi
+  printf '%s\n' "${SAVE_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt"
 
-  log "Final image list to save:"
+  if [ "$PARTIAL_EXPORT" = "1" ]; then
+    log "Full stack image manifest remains:"
+    printf '  %s\n' "${EXPLICIT_IMAGES[@]}"
+    log "Partial archive image list to save:"
+  else
+    log "Final image list to save:"
+  fi
+
   local arch
   for img in "${SAVE_IMAGES[@]}"; do
     arch="$(image_platform "$img")"
@@ -762,7 +906,7 @@ EOF_SERVICES
   sha256_file "$OUTPUT_PATH"
 
   log "Export complete."
-  ls -lh "$OUTPUT_PATH" "$OUTPUT_PATH.sha256" "$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.images.txt" "$SERVICE_META_FILE" 2>/dev/null || true
+  ls -lh "$OUTPUT_PATH" "$OUTPUT_PATH.sha256" "$OUTPUT_DIR/$OUTPUT_BASE.images.txt" "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt" "$SERVICE_META_FILE" 2>/dev/null || true
 
   cat <<EOF_DONE
 
@@ -773,7 +917,8 @@ Offline server usage:
 Files created:
   $OUTPUT_PATH
   $OUTPUT_PATH.sha256
-  $OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.images.txt
+  $OUTPUT_DIR/$OUTPUT_BASE.images.txt
+  $OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt
   $SERVICE_META_FILE
 
 EOF_DONE

@@ -108,6 +108,7 @@ docker-compose.offline.yml 자동 포함
 필요한 이미지 pull
 broker 이미지 build
 모든 이미지를 하나의 tar.gz 파일로 저장
+특정 서비스 이미지만 부분 archive로 저장
 sha256 체크섬 생성
 이미지 목록 파일 생성
 ```
@@ -257,8 +258,19 @@ images/
   lucy-teamcloud-onprem-images-linux-amd64.tar.gz
   lucy-teamcloud-onprem-images-linux-amd64.tar.gz.sha256
   lucy-teamcloud-onprem-images-linux-amd64.images.txt
+  lucy-teamcloud-onprem-images-linux-amd64.archive-images.txt
   lucy-teamcloud-onprem-images-linux-amd64.explicit-images.txt
   lucy-teamcloud-onprem-images-linux-amd64.services.txt
+```
+
+특정 서비스 이미지만 새로 패키징하려면 `--update-service`를 사용합니다.
+이 경우 tar.gz에는 선택한 서비스 이미지들만 들어가지만, `*.images.txt`와
+`*.services.txt`는 전체 Compose stack 기준으로 생성됩니다. 폐쇄망 서버에는
+선택하지 않은 기존 이미지가 이미 있어야 합니다.
+
+```bash
+./scripts/export-compose-images.sh --update-service tc-fe
+./scripts/export-compose-images.sh --update-service tc-fe --update-service auth-fe
 ```
 
 생성된 `images/` 디렉토리를 폐쇄망 서버로 복사합니다.
@@ -804,6 +816,15 @@ secrets/
 ```bash
 ./scripts/export-compose-images.sh
 ```
+
+특정 서비스 이미지만 새로 교체할 경우에는 부분 archive를 만들 수 있습니다.
+
+```bash
+./scripts/export-compose-images.sh --update-service tc-fe
+```
+
+부분 archive는 선택한 서비스 이미지들만 포함하지만, image manifest는 전체 stack 기준입니다.
+폐쇄망 서버에 선택하지 않은 이미지가 이미 있는 상태에서 사용해야 합니다.
 
 새로 생성된 `images/` 파일을 폐쇄망 서버로 옮깁니다.
 
