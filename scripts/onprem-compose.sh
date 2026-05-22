@@ -6,7 +6,7 @@ set -Eeo pipefail
 # Operational wrapper for Lucy TeamCloud On-Premise Docker Compose commands.
 # It preserves data by default and delegates readiness checks to preflight.
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 IMAGE_OVERRIDE_REL=".install-state/compose-image-tags.override.yml"
 
 cleanup_tmp_files() {
@@ -33,7 +33,7 @@ DESCRIPTION
   Data is preserved by default. This script never runs docker compose down -v.
 
 USAGE
-  ./scripts/onprem-compose.sh <COMMAND> [ARGS...]
+  ./scripts/onprem-compose.sh <COMMAND> [PREFLIGHT_OPTIONS...] [ARGS...]
 
 COMMANDS
   check
@@ -92,6 +92,18 @@ OPTIONS
   -v, --version
       Show script version and exit.
 
+PREFLIGHT OPTIONS
+  The following options are forwarded only to preflight-onprem.sh for commands
+  that run preflight: check, up, restart, recreate, restart-stack,
+  replace-images.
+
+    --skip-resource-check
+    --skip-port-check
+    --skip-image-check
+    --skip-arch-check
+    --allow-cert-host-mismatch
+    --allow-immutable-change
+
 ENVIRONMENT VARIABLES
   PROJECT_ROOT
       Explicit project root path.
@@ -105,9 +117,11 @@ ENVIRONMENT VARIABLES
 
 EXAMPLES
   ./scripts/onprem-compose.sh check
+  ./scripts/onprem-compose.sh check --skip-resource-check
   ./scripts/onprem-compose.sh up
   ./scripts/onprem-compose.sh restart broker
   ./scripts/onprem-compose.sh recreate broker
+  ./scripts/onprem-compose.sh recreate --skip-resource-check broker
   ./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
   ./scripts/onprem-compose.sh image-override
   ./scripts/onprem-compose.sh down
@@ -189,6 +203,41 @@ array_contains() {
   done
 
   return 1
+}
+
+is_preflight_option() {
+  case "$1" in
+    --skip-resource-check|--skip-port-check|--skip-image-check|--skip-arch-check|--allow-cert-host-mismatch|--allow-immutable-change)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+split_preflight_args() {
+  PREFLIGHT_ARGS=()
+  COMMAND_ARGS=()
+
+  local arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
+
+    if [ "$arg" = "--" ]; then
+      while [ "$#" -gt 0 ]; do
+        COMMAND_ARGS+=("$1")
+        shift
+      done
+      break
+    fi
+
+    if is_preflight_option "$arg"; then
+      PREFLIGHT_ARGS+=("$arg")
+    else
+      COMMAND_ARGS+=("$arg")
+    fi
+  done
 }
 
 split_colon_list_to_lines() {
@@ -364,7 +413,7 @@ run_preflight() {
   [ -x "$preflight" ] || die "preflight script not found or not executable: $preflight"
   log "Running preflight..."
   compose_files="$(join_by_colon "${COMPOSE_FILE_LIST[@]}")"
-  PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight"
+  PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
 }
 
 sorted_compose_images() {
@@ -703,6 +752,16 @@ main() {
       ;;
     *)
       init_context
+      ;;
+  esac
+
+  case "$command" in
+    check|up|restart|recreate|restart-stack|replace-images)
+      split_preflight_args "$@"
+      set -- "${COMMAND_ARGS[@]}"
+      ;;
+    *)
+      PREFLIGHT_ARGS=()
       ;;
   esac
 

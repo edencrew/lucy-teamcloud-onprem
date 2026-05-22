@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -30,7 +30,8 @@ MIN_RAM_MB="4096"
 MIN_DISK_MB="10240"
 
 IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
-ROOT_OWNED_GENERATED_ARTIFACTS="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
+ROOT_OWNED_GENERATED_FILES="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
+ROOT_OWNED_GENERATED_DIRS="git/data/ssh"
 
 show_help() {
   cat <<'EOF'
@@ -356,13 +357,42 @@ path_is_root_owned() {
   [ -n "$first" ]
 }
 
-log_allowed_root_owned_generated_artifacts() {
+path_is_allowed_root_owned_generated_path() {
+  local path="$1"
+  local rel full
+
+  path_is_root_owned "$path" || return 1
+
+  for rel in $ROOT_OWNED_GENERATED_FILES; do
+    full="$ROOT_DIR/$rel"
+    [ "$path" = "$full" ] && return 0
+  done
+
+  for rel in $ROOT_OWNED_GENERATED_DIRS; do
+    full="$ROOT_DIR/$rel"
+    path_is_under_directory "$path" "$full" && return 0
+  done
+
+  return 1
+}
+
+first_allowed_root_owned_mismatch() {
+  local path="$1"
+  local uid="$2"
+  local gid="$3"
+  local first
+
+  first="$(find "$path" -user 0 -group 0 \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
+  printf '%s' "$first"
+}
+
+log_allowed_root_owned_generated_paths() {
   local dir="$1"
   local uid="$2"
   local gid="$3"
   local rel full mismatch
 
-  for rel in $ROOT_OWNED_GENERATED_ARTIFACTS; do
+  for rel in $ROOT_OWNED_GENERATED_FILES; do
     full="$ROOT_DIR/$rel"
     [ -e "$full" ] || continue
     path_is_under_directory "$full" "$dir" || continue
@@ -370,7 +400,18 @@ log_allowed_root_owned_generated_artifacts() {
 
     mismatch="$(find "$full" -prune \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
     if [ -n "$mismatch" ]; then
-      info_msg "Allowed root-owned generated artifact: $rel"
+      info_msg "Allowed root-owned generated path: $rel"
+    fi
+  done
+
+  for rel in $ROOT_OWNED_GENERATED_DIRS; do
+    full="$ROOT_DIR/$rel"
+    [ -e "$full" ] || continue
+    path_is_under_directory "$full" "$dir" || continue
+
+    mismatch="$(first_allowed_root_owned_mismatch "$full" "$uid" "$gid")"
+    if [ -n "$mismatch" ]; then
+      info_msg "Allowed root-owned generated path: $rel"
     fi
   done
 }
@@ -379,15 +420,20 @@ first_disallowed_owner_mismatch() {
   local path="$1"
   local uid="$2"
   local gid="$3"
-  local first
+  local candidate
 
-  first="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) \
-    ! \( -path "$ROOT_DIR/git/data/gitea/.admin-created" -user 0 -group 0 \) \
-    ! \( -path "$ROOT_DIR/secrets/secrets.env" -user 0 -group 0 \) \
-    ! \( -path "$ROOT_DIR/nginx/certs/server.crt" -user 0 -group 0 \) \
-    ! \( -path "$ROOT_DIR/nginx/certs/server.key" -user 0 -group 0 \) \
-    -print -quit 2>/dev/null || true)"
-  printf '%s' "$first"
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if path_is_allowed_root_owned_generated_path "$candidate"; then
+      continue
+    fi
+    printf '%s' "$candidate"
+    return 0
+  done <<EOF_OWNER_MISMATCH
+$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print 2>/dev/null || true)
+EOF_OWNER_MISMATCH
+
+  return 0
 }
 
 first_root_owned_path() {
@@ -420,7 +466,7 @@ prepare_host_owned_directory() {
   ensure_directory_exists "$rel" || return 0
 
   info_msg "Checking runtime directory ownership: $rel"
-  log_allowed_root_owned_generated_artifacts "$full" "$RUNTIME_UID" "$RUNTIME_GID"
+  log_allowed_root_owned_generated_paths "$full" "$RUNTIME_UID" "$RUNTIME_GID"
   mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
   if [ -n "$mismatch" ]; then
     info_msg "Preparing ownership: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"

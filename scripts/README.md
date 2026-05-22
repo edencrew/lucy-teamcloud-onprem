@@ -385,6 +385,17 @@ docker compose \
 ./scripts/onprem-compose.sh recreate broker
 ```
 
+preflight resource check를 건너뛰고 특정 서비스 컨테이너를 재생성:
+
+```bash
+./scripts/onprem-compose.sh recreate --skip-resource-check broker
+```
+
+`check`, `up`, `restart`, `recreate`, `restart-stack`, `replace-images`는
+`--skip-resource-check`, `--skip-port-check`, `--skip-image-check`, `--skip-arch-check`,
+`--allow-cert-host-mismatch`, `--allow-immutable-change`를 preflight 옵션으로 받아
+서비스 인자와 분리해 `preflight-onprem.sh`에 전달합니다.
+
 이미지 archive 교체 후 재생성:
 
 ```bash
@@ -571,12 +582,14 @@ id -g
 
 ```text
 git/data/gitea/.admin-created
+git/data/ssh/
 secrets/secrets.env
 nginx/certs/server.crt
 nginx/certs/server.key
 ```
 
-이 목록 밖의 root-owned 파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
+`git/data/ssh/`는 디렉터리와 그 하위 항목을 포함합니다. 이 목록 밖의 root-owned
+파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
 
 ---
 
