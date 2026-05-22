@@ -122,6 +122,7 @@ EXAMPLES
   ./scripts/onprem-compose.sh restart broker
   ./scripts/onprem-compose.sh recreate broker
   ./scripts/onprem-compose.sh recreate --skip-resource-check broker
+  ./scripts/onprem-compose.sh restart-stack --skip-resource-check
   ./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
   ./scripts/onprem-compose.sh image-override
   ./scripts/onprem-compose.sh down

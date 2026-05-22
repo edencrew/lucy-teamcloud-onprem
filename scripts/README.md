@@ -385,6 +385,12 @@ docker compose \
 ./scripts/onprem-compose.sh restart-stack
 ```
 
+preflight resource check를 건너뛰고 전체 스택을 재시작:
+
+```bash
+./scripts/onprem-compose.sh restart-stack --skip-resource-check
+```
+
 특정 서비스만 재시작:
 
 ```bash

@@ -1295,6 +1295,63 @@ is_port_in_use() {
   return 2
 }
 
+container_id_matches() {
+  local needle="$1"
+  local candidate="$2"
+
+  [ -n "$needle" ] || return 1
+  [ -n "$candidate" ] || return 1
+
+  case "$needle" in
+    "$candidate"|"$candidate"*)
+      return 0
+      ;;
+  esac
+
+  case "$candidate" in
+    "$needle"|"$needle"*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+is_current_compose_container_id() {
+  local container_id="$1"
+  local current_id
+
+  while IFS= read -r current_id; do
+    [ -n "$current_id" ] || continue
+    if container_id_matches "$container_id" "$current_id"; then
+      return 0
+    fi
+  done <<EOF_COMPOSE_CONTAINER_IDS
+$(compose ps -q 2>/dev/null || true)
+EOF_COMPOSE_CONTAINER_IDS
+
+  return 1
+}
+
+is_port_used_by_current_compose_project() {
+  local port="$1"
+  local owner_id
+  local owner_count=0
+
+  while IFS= read -r owner_id; do
+    [ -n "$owner_id" ] || continue
+    owner_count=$((owner_count + 1))
+
+    if ! is_current_compose_container_id "$owner_id"; then
+      return 1
+    fi
+  done <<EOF_PORT_OWNER_IDS
+$(docker ps --filter "publish=$port" -q 2>/dev/null || true)
+EOF_PORT_OWNER_IDS
+
+  [ "$owner_count" -gt 0 ]
+}
+
 validate_ports() {
   if [ "$SKIP_PORT_CHECK" = "1" ]; then
     log "Skipping port checks by request."
@@ -1321,7 +1378,11 @@ validate_ports() {
     esac
 
     if is_port_in_use "$port"; then
-      fail_msg "Host port is already in use: $port"
+      if is_port_used_by_current_compose_project "$port"; then
+        ok "Host port is already used by this compose project: $port"
+      else
+        fail_msg "Host port is already in use: $port"
+      fi
     else
       status=$?
       if [ "$status" -eq 2 ]; then
