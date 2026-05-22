@@ -1040,6 +1040,48 @@ python3 -m json.tool license/license.json
 
 ---
 
+## 17.6 브로커 `/vernemq/data/generated.configs` 권한 오류
+
+예:
+
+```text
+Error creating /vernemq/data/generated.configs: permission denied
+```
+
+`broker/data` bind mount 소유권과 컨테이너 내부 `vernemq` 실행 UID가 맞지 않는 상태입니다.
+
+먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
+
+```bash
+./scripts/preflight-onprem.sh
+```
+
+운영 계정의 UID/GID를 명시하려면 `.env`에 다음 값을 설정합니다.
+
+```env
+HOST_UID=1000
+HOST_GID=1000
+```
+
+값을 생략한 경우 브로커 entrypoint는 `/vernemq/data`의 현재 소유자를 기준으로 `vernemq`
+사용자 UID/GID를 맞춥니다.
+
+---
+
+## 17.7 브로커 `ulimit -n` 경고
+
+예:
+
+```text
+WARNING: ulimit -n is 1024; 65536 is the recommended minimum.
+```
+
+`broker` 서비스는 Compose 설정에서 `nofile` soft/hard limit을 `65536`으로 지정합니다.
+이 경고가 계속 보이면 서버 또는 Docker daemon의 ulimit 정책이 컨테이너 설정을 제한하는지
+확인해야 합니다.
+
+---
+
 # 18. 스크립트 도움말
 
 각 스크립트의 자세한 옵션은 `--help`로 확인할 수 있습니다.
