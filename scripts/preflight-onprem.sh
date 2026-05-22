@@ -169,6 +169,10 @@ ok() {
   printf '  \033[1;32mOK\033[0m   %s\n' "$*"
 }
 
+info_msg() {
+  printf '  \033[1;34mINFO\033[0m %s\n' "$*"
+}
+
 warn() {
   printf '  \033[1;33mWARN\033[0m %s\n' "$*" >&2
 }
@@ -334,16 +338,18 @@ first_owner_mismatch() {
   local path="$1"
   local uid="$2"
   local gid="$3"
+  local first
 
-  find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print 2>/dev/null \
-    | awk 'NR == 1 { print; exit }'
+  first="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
+  printf '%s' "$first"
 }
 
 first_root_owned_path() {
   local path="$1"
+  local first
 
-  find "$path" -user 0 -print 2>/dev/null \
-    | awk 'NR == 1 { print; exit }'
+  first="$(find "$path" -user 0 -print -quit 2>/dev/null || true)"
+  printf '%s' "$first"
 }
 
 print_root_owned_sample() {
@@ -356,7 +362,7 @@ directory_is_empty() {
   local path="$1"
   local first
 
-  first="$(find "$path" -mindepth 1 -print 2>/dev/null | awk 'NR == 1 { print; exit }')"
+  first="$(find "$path" -mindepth 1 -print -quit 2>/dev/null || printf '%s' "__find_failed__")"
   [ -z "$first" ]
 }
 
@@ -367,8 +373,10 @@ prepare_host_owned_directory() {
 
   ensure_directory_exists "$rel" || return 0
 
+  info_msg "Checking runtime directory ownership: $rel"
   mismatch="$(first_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
   if [ -n "$mismatch" ]; then
+    info_msg "Preparing ownership: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
     if chown -R "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
       ok "Directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
     else
@@ -394,6 +402,7 @@ prepare_service_owned_directory() {
 
   ensure_directory_exists "$rel" || return 0
 
+  info_msg "Checking service data directory ownership: $rel"
   root_owned="$(first_root_owned_path "$full")"
   if [ -n "$root_owned" ]; then
     if directory_is_empty "$full"; then
