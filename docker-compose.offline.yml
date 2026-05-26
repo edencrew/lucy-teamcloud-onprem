@@ -5,8 +5,8 @@ services:
       context: ./init-secrets
     platform: ${TARGET_PLATFORM:-linux/amd64}
     volumes: !override
-      - ./secrets:/secrets
-      - ./nginx/certs:/certs
+      - ./secrets:/secrets:z
+      - ./nginx/certs:/certs:z
     command: null
 
   broker:

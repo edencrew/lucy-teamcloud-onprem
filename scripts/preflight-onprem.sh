@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.4"
+SCRIPT_VERSION="1.2.5"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -1303,6 +1303,68 @@ EOF_IMAGES
   fi
 }
 
+validate_image_identity() {
+  local image="$1"
+  local expected="$2"
+  local desc="$3"
+  local config=""
+
+  ensure_local_image_available "$image" || return 0
+  config="$(docker image inspect "$image" --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' 2>/dev/null || true)"
+
+  if printf '%s' "$config" | grep -F "$expected" >/dev/null 2>&1; then
+    ok "Image identity looks correct: $image"
+  else
+    fail_msg "Image identity mismatch for $image. Expected $desc. Inspect: ${config:-<empty>}"
+  fi
+}
+
+validate_image_metadata_contains() {
+  local image="$1"
+  local expected="$2"
+  local desc="$3"
+  local metadata=""
+
+  ensure_local_image_available "$image" || return 0
+  metadata="$(docker image inspect "$image" --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}} {{json .Config.Env}} {{json .Config.Labels}}' 2>/dev/null || true)"
+
+  case "$metadata" in
+    ""|"null null null null")
+      warn "Could not inspect enough image metadata to validate identity: $image"
+      return 0
+      ;;
+  esac
+
+  if printf '%s' "$metadata" | grep -F "$expected" >/dev/null 2>&1; then
+    ok "Image identity looks correct: $image"
+  else
+    fail_msg "Image identity mismatch for $image. Expected $desc. Inspect: ${metadata:-<empty>}"
+  fi
+}
+
+validate_offline_image_identities() {
+  if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
+    return 0
+  fi
+
+  log "Checking offline build image identity..."
+
+  validate_image_identity \
+    "localhost/lucy-teamcloud-onprem-broker:offline" \
+    "/vernemq/bin/vernemq start" \
+    "the locally built VerneMQ broker image"
+
+  validate_image_identity \
+    "localhost/lucy-teamcloud-onprem-init-secrets:offline" \
+    "/usr/local/bin/docker-entrypoint.sh" \
+    "the locally built init-secrets image"
+
+  validate_image_metadata_contains \
+    "postgres:17" \
+    "PG_VERSION" \
+    "the official PostgreSQL image"
+}
+
 detect_target_platform() {
   if [ -n "${TARGET_PLATFORM:-}" ]; then
     printf '%s' "$TARGET_PLATFORM"
@@ -1855,6 +1917,7 @@ main() {
   validate_compose_config
   validate_ports
   validate_local_images
+  validate_offline_image_identities
   validate_image_architectures
   validate_immutable_env_lock
 

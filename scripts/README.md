@@ -621,6 +621,10 @@ nginx/certs/server.key
 `git/data/ssh/`는 디렉터리와 그 하위 항목을 포함합니다. 이 목록 밖의 root-owned
 파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
 
+Podman을 SELinux enforcing 환경에서 실행하는 경우, bind mount 파일이 컨테이너 내부에서
+`Permission denied`로 보일 수 있습니다. 기본 compose 파일은 shared SELinux label
+옵션인 `:z`를 bind mount에 붙여 이 문제를 피합니다.
+
 ---
 
 # 6. 최초 실행 후 변경하면 안 되는 값
