@@ -22,10 +22,12 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.3"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
+MIN_PODMAN_VERSION="5.0.0"
+MIN_PODMAN_COMPOSE_VERSION="1.5.0"
 MIN_RAM_MB="4096"
 MIN_DISK_MB="10240"
 
@@ -142,9 +144,9 @@ AUTO-DETECTED COMPOSE FILE ORDER
   3. docker-compose.override.yml / docker-compose.override.yaml if present
 
 CHECKS PERFORMED
-  - Docker installed and daemon reachable
-  - Docker version >= 20.10
-  - Docker Compose plugin version >= 2.20
+  - Docker or Podman installed and reachable
+  - Docker version >= 20.10 or Podman version >= 5.0
+  - Docker Compose plugin version >= 2.20 or podman-compose version >= 1.5
   - Minimum RAM and disk
   - .env exists and required values are present
   - EXTERNAL_URL is valid and not localhost / 127.0.0.1 / 0.0.0.0
@@ -683,6 +685,73 @@ version_ge() {
   return 1
 }
 
+detect_container_runtime() {
+  local raw
+  raw="$(docker version 2>&1 || true)"
+
+  if printf '%s\n' "$raw" | grep -Eiq 'podman|libpod'; then
+    printf '%s' "podman"
+  else
+    printf '%s' "docker"
+  fi
+}
+
+detect_compose_provider() {
+  local raw
+  raw="$(docker compose version 2>&1 || true)"
+
+  if printf '%s\n' "$raw" | grep -Eiq 'podman-compose|podman version'; then
+    printf '%s' "podman-compose"
+  else
+    printf '%s' "docker-compose"
+  fi
+}
+
+detect_container_runtime_version() {
+  docker version --format '{{.Server.Version}}' 2>/dev/null || true
+}
+
+extract_first_semver() {
+  awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        token = $i
+        sub(/^v/, "", token)
+        sub(/^[^0-9]*/, "", token)
+        sub(/[^0-9.].*$/, "", token)
+        if (token ~ /^[0-9]+([.][0-9]+)+$/) {
+          print token
+          exit
+        }
+      }
+    }
+  '
+}
+
+detect_compose_version() {
+  local provider="$1"
+  local raw short version
+
+  if [ "$provider" = "podman-compose" ]; then
+    raw="$(docker compose version 2>&1 || true)"
+    version="$(printf '%s\n' "$raw" | sed -n 's/.*podman-compose[[:space:]][[:space:]]*version[[:space:]][[:space:]]*\([0-9][0-9.]*\).*/\1/p' | sed -n '1p')"
+    if [ -n "$version" ]; then
+      printf '%s' "$version"
+      return 0
+    fi
+  fi
+
+  short="$(docker compose version --short 2>/dev/null || true)"
+  version="$(printf '%s\n' "$short" | extract_first_semver)"
+  if [ -n "$version" ]; then
+    printf '%s' "$version"
+    return 0
+  fi
+
+  raw="$(docker compose version 2>&1 || true)"
+  printf '%s\n' "$raw" | extract_first_semver
+}
+
 get_env_value() {
   local key="$1"
   local file="$ROOT_DIR/.env"
@@ -930,26 +999,53 @@ validate_resources() {
 }
 
 validate_docker_versions() {
-  log "Checking Docker and Docker Compose versions..."
+  log "Checking container runtime and compose provider versions..."
 
-  local docker_version compose_version
-  docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
-  compose_version="$(docker compose version --short 2>/dev/null || docker compose version 2>/dev/null | sed -n 's/.*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' | head -n 1 || true)"
+  local runtime runtime_version runtime_label runtime_min
+  local compose_provider compose_version compose_label compose_min
 
-  if [ -z "$docker_version" ]; then
-    fail_msg "Could not detect Docker Server version"
-  elif version_ge "$docker_version" "$MIN_DOCKER_VERSION"; then
-    ok "Docker version $docker_version >= $MIN_DOCKER_VERSION"
+  runtime="$(detect_container_runtime)"
+  runtime_version="$(detect_container_runtime_version)"
+
+  case "$runtime" in
+    podman)
+      runtime_label="Podman"
+      runtime_min="$MIN_PODMAN_VERSION"
+      ;;
+    *)
+      runtime_label="Docker"
+      runtime_min="$MIN_DOCKER_VERSION"
+      ;;
+  esac
+
+  if [ -z "$runtime_version" ]; then
+    fail_msg "Could not detect $runtime_label version"
+  elif version_ge "$runtime_version" "$runtime_min"; then
+    ok "$runtime_label version $runtime_version >= $runtime_min"
   else
-    fail_msg "Docker version $docker_version is lower than required $MIN_DOCKER_VERSION"
+    fail_msg "$runtime_label version $runtime_version is lower than required $runtime_min"
   fi
 
+  compose_provider="$(detect_compose_provider)"
+  compose_version="$(detect_compose_version "$compose_provider")"
+
+  case "$compose_provider" in
+    podman-compose)
+      compose_label="podman-compose"
+      compose_min="$MIN_PODMAN_COMPOSE_VERSION"
+      ;;
+    *)
+      compose_label="Docker Compose"
+      compose_min="$MIN_COMPOSE_VERSION"
+      ;;
+  esac
+
   if [ -z "$compose_version" ]; then
-    fail_msg "Could not detect Docker Compose version"
-  elif version_ge "$compose_version" "$MIN_COMPOSE_VERSION"; then
-    ok "Docker Compose version $compose_version >= $MIN_COMPOSE_VERSION"
+    fail_msg "Could not detect $compose_label version"
+  elif version_ge "$compose_version" "$compose_min"; then
+    ok "$compose_label version $compose_version >= $compose_min"
   else
-    fail_msg "Docker Compose version $compose_version is lower than required $MIN_COMPOSE_VERSION"
+    fail_msg "$compose_label version $compose_version is lower than required $compose_min"
   fi
 }
 
@@ -1327,18 +1423,62 @@ EOF_ARCH_IMAGES
 }
 
 get_published_ports() {
-  # Parses normalized docker compose config long-form ports.
-  # Expected lines often look like:
+  # Parses normalized compose config ports from both Docker Compose and
+  # podman-compose. Docker Compose often emits long form:
   #   published: "80"
-  #   published: "443"
+  # podman-compose may emit short form:
+  #   - 80:80
+  #   - 127.0.0.1:8080:80
   compose config 2>/dev/null | awk '
+    function clean(value) {
+      sub(/[[:space:]]+#.*$/, "", value)
+      gsub(/"/, "", value)
+      gsub(/\047/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      sub(/\/[A-Za-z0-9]+$/, "", value)
+      return value
+    }
+
+    function emit(value) {
+      value = clean(value)
+      if (value != "") print value
+    }
+
+    function emit_short(value, parts, n) {
+      value = clean(value)
+      if (value == "" || value ~ /^[{[]/) return
+      if (value ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*/) return
+
+      n = split(value, parts, ":")
+      if (n >= 2) {
+        emit(parts[n - 1])
+      }
+    }
+
+    /^    ports:[[:space:]]*$/ {
+      in_ports = 1
+      next
+    }
+
+    in_ports && /^    [^[:space:]-][^:]*:[[:space:]]*/ {
+      in_ports = 0
+    }
+
+    in_ports && /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
+      in_ports = 0
+    }
+
+    in_ports && /^[[:space:]]+-[[:space:]]*/ {
+      line = $0
+      sub(/^[[:space:]]+-[[:space:]]*/, "", line)
+      emit_short(line)
+      next
+    }
+
     /published:[[:space:]]*/ {
       line = $0
       sub(/^.*published:[[:space:]]*/, "", line)
-      gsub(/"/, "", line)
-      gsub(/\047/, "", line)
-      gsub(/[[:space:]]/, "", line)
-      if (line != "") print line
+      emit(line)
     }
   ' | sed 's#/.*$##' | sort -n | uniq
 }
@@ -1648,8 +1788,8 @@ main() {
   require_cmd sort
   require_cmd grep
 
-  docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
-  docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
+  docker info >/dev/null 2>&1 || die "Container runtime is not running or current user cannot access docker/podman."
+  docker compose version >/dev/null 2>&1 || die "Compose provider is not available. Check: docker compose version"
 
   local sdir
   sdir="$(script_dir)"

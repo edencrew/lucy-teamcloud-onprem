@@ -210,8 +210,8 @@ nginx/certs/server.key 자동 생성
 폐쇄망 서버에는 다음이 필요합니다.
 
 ```text
-Docker 20.10 이상
-Docker Compose v2.20 이상
+Docker 20.10 이상 + Docker Compose v2.20 이상
+또는 Podman 5.0 이상 + podman-compose 1.5 이상
 최소 4GB RAM
 최소 10GB 디스크 여유 공간
 ```
@@ -223,7 +223,8 @@ RAM 8GB 이상
 디스크 여유 공간 30GB 이상
 ```
 
-Docker Compose v2.20 이상이 필요한 이유는 `docker-compose.override.yml`에서 `!override` 태그를 사용할 수 있기 때문입니다.
+Docker Compose v2.20 이상 기준은 `docker-compose.override.yml`에서 `!override` 태그를 사용할 수 있기 때문입니다.
+Podman 환경에서는 `podman-docker`와 `podman-compose` 조합을 사용하며, preflight는 Docker 버전 기준이 아니라 Podman 버전 기준으로 검증합니다.
 
 ---
 

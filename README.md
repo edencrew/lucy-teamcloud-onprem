@@ -2,8 +2,8 @@
 
 ## 사전 요구사항
 
-- Docker 20.10 이상
-- Docker Compose v2.20 이상 (override 파일의 `!override` 태그 지원)
+- Docker 20.10 이상 + Docker Compose v2.20 이상
+- 또는 Podman 5.0 이상 + podman-compose 1.5 이상
 - 최소 4GB RAM, 10GB 디스크 공간
 
 ## 1. 환경 설정
