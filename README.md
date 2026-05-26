@@ -2,9 +2,9 @@
 
 ## 사전 요구사항
 
-- Docker 20.10 이상 + Docker Compose v2.20 이상
-- 또는 Podman 5.0 이상 + podman-compose 1.5 이상
-- 최소 2GB RAM, 10GB 디스크 공간
+- Docker 환경: Docker 20.10 이상, Docker Compose v2.20 이상
+- Podman 환경: Podman 5.0 이상, podman-compose 1.5 이상
+- 최소 4GB RAM, 10GB 디스크 공간
 
 ## 1. 환경 설정
 
@@ -29,14 +29,6 @@ EXTERNAL_URL=https://your-domain.com
 # EXTERNAL_URL 이 https 면 wss://, http 면 ws:// 를 사용해야 합니다.
 BROKER_WS_URL=wss://your-domain.com/mqtt
 
-# 호스트 공개 포트
-HTTP_PORT=80
-HTTPS_PORT=443
-BROKER_MQTT_PORT=1883
-BROKER_WS_PORT=8080
-BROKER_WSS_PORT=8081
-BROKER_HTTP_PORT=8888
-
 # Lucy 서비스 관리자 계정
 LUCY_ADMIN_EMAIL=admin@your-company.com
 LUCY_ADMIN_PASSWORD=your-secure-password
@@ -57,10 +49,9 @@ TZ=Asia/Seoul
 |------|----------|
 | `EXTERNAL_URL` | `localhost`, `127.0.0.1` 사용 불가. 반드시 외부에서 접근 가능한 주소 입력 |
 | `BROKER_WS_URL` | `EXTERNAL_URL` 의 스킴과 짝을 맞출 것 (`https` → `wss://`, `http` → `ws://`). 기본 경로는 `/mqtt` |
-| `HTTP_PORT`, `HTTPS_PORT` | 외부 접속용 host port. 1024 미만 포트는 rootless Podman에서 OS 설정에 따라 막힐 수 있으며 preflight가 검증 |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요 (예: `DB_PASSWORD="P@ss!word"`) |
-| Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정. rootless Podman에서는 필수 |
+| Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
 
 ### 1.4 계정 정보 변경 불가 안내
 
@@ -130,13 +121,26 @@ docker compose restart gw
 
 ## 4. 서비스 실행
 
-### 4.1 최초 실행
+### 4.1 Docker Compose 실행
 
 ```bash
-docker compose up -d
+./scripts/preflight-docker.sh --compose-up
 ```
 
-### 4.2 로그 확인
+### 4.2 Podman Compose 실행
+
+Rootless Podman에서 80/443을 사용할 수 없으면 `.env`의 `EXTERNAL_URL`,
+`BROKER_WS_URL`, `HTTP_PORT`, `HTTPS_PORT`를 같은 포트로 맞춘 뒤 실행합니다.
+
+```bash
+./scripts/preflight-podman.sh --compose-up
+```
+
+`scripts/preflight-onprem.sh`와 `scripts/onprem-compose.sh`는 Docker/Podman을
+자동 감지하는 호환 wrapper입니다. 운영 문서나 설치 절차에는 가능하면
+`preflight-docker.sh` 또는 `preflight-podman.sh`를 명시하세요.
+
+### 4.3 로그 확인
 
 ```bash
 # 전체 로그
@@ -146,7 +150,7 @@ docker compose logs -f
 docker compose logs -f tc-be
 ```
 
-### 4.3 서비스 상태 확인
+### 4.4 서비스 상태 확인
 
 ```bash
 docker compose ps
@@ -290,11 +294,6 @@ docker compose up -d
 | `./license/license.json` | 라이센스 파일 (고객 제공) | 권장 |
 | `./nginx/certs/` | SSL 인증서 | 권장 |
 
-Linux rootless Podman 환경에서는 `postgres/data/`, `git/data/`, `broker/data/`,
-`broker/logs/` 내부 파일이 `166536` 같은 subordinate UID로 보일 수 있습니다.
-서비스 데이터 디렉터리는 root 소유만 아니면 정상으로 간주하며, `secrets`,
-`nginx/certs`, `license`는 compose 실행 사용자 소유여야 합니다.
-
 > **`secrets/secrets.env` 분실 시 영향**: 첫 부팅 시 자동 재생성되지만 기존에 발급된 모든 사용자 토큰/세션이 무효화되어 전원 재로그인이 필요하고, Gitea의 2FA 백업코드 등 일부 암호화된 데이터는 복호화가 불가능해집니다. 백업을 반드시 보관하세요.
 
 ### 백업 예시
@@ -329,25 +328,38 @@ docker compose ps -a
 
 ### 포트 충돌
 
-기본 포트(80, 443)가 사용 중이거나 rootless Podman에서 특권 포트 publish가 허용되지 않으면
-`.env`의 host port를 변경하세요.
+기본 포트(80, 443)가 사용 중인 경우 `docker-compose.override.yml`로 호스트 포트를 변경하세요.
+원본 `docker-compose.yml`은 직접 수정하지 않으므로 업데이트 시 충돌이 없습니다.
 
-```env
-HTTP_PORT=18080
-HTTPS_PORT=18443
+**1. 예제 파일 복사:**
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
 ```
 
-`.env` 파일의 `EXTERNAL_URL`에도 포트를 반영합니다.
+**2. `docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
+
+```yaml
+services:
+  gw:
+    ports: !override
+      - "8080:80"
+      - "8443:443"
+```
+
+> `!override` 태그는 원본 `docker-compose.yml`의 `ports` 리스트를 대체합니다. (없으면 두 리스트가 합쳐져 80/443 매핑이 함께 남아 충돌이 발생합니다. Docker Compose v2.20.0+ 필요.)
+
+**3. `.env` 파일의 `EXTERNAL_URL`에도 포트 반영:**
 
 ```bash
 # 기본 포트 사용 시
 EXTERNAL_URL=https://your-domain.com
 
-# 18443 포트 사용 시
-EXTERNAL_URL=https://your-domain.com:18443
+# 8443 포트 사용 시
+EXTERNAL_URL=https://your-domain.com:8443
 ```
 
-적용:
+**4. 적용:**
 
 ```bash
 docker compose up -d

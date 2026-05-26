@@ -20,6 +20,7 @@
 lucy-teamcloud-onprem/
   docker-compose.yml
   docker-compose.offline.yml
+  docker-compose.podman.yml
   docker-compose.override.yml.example
   .env.example
 
@@ -27,8 +28,14 @@ lucy-teamcloud-onprem/
     export-compose-images.sh
     load-compose-images.sh
     preflight-onprem.sh
+    preflight-docker.sh
+    preflight-podman.sh
     onprem-compose.sh
+    onprem-compose-docker.sh
+    onprem-compose-podman.sh
     init-secrets.sh
+    lib/
+      onprem-common.sh
 
   images/
     ...
@@ -81,7 +88,7 @@ broker:
 ```yaml
 services:
   broker:
-    image: localhost/lucy-teamcloud-onprem-broker:offline
+    image: lucy-teamcloud-onprem-broker:offline
     platform: ${TARGET_PLATFORM:-linux/amd64}
 ```
 
@@ -92,11 +99,33 @@ docker-compose.yml
 + docker-compose.offline.yml
 ```
 
-`export-compose-images.sh`와 `preflight-onprem.sh`는 이 파일이 있으면 자동으로 포함합니다.
+`export-compose-images.sh`와 Docker용 `preflight-docker.sh`는 이 파일이 있으면 자동으로 포함합니다.
 
 ---
 
-## 2.3 `scripts/export-compose-images.sh`
+## 2.3 `docker-compose.podman.yml`
+
+Podman 전용 compatibility override 파일입니다.
+
+역할:
+
+```text
+rootless Podman용 host port를 .env 값으로 매핑
+SELinux 환경용 bind mount label(:z) 적용
+auth-be / tc-be / git 내부 포트를 8080으로 변경
+Podman이 처리하지 못하는 init-secrets one-shot depends_on 제거
+```
+
+Podman에서는 `init-secrets`를 먼저 실행한 뒤 나머지 서비스를 올려야 하므로,
+직접 `docker compose up`을 실행하지 말고 다음 스크립트를 사용하세요.
+
+```bash
+./scripts/preflight-podman.sh --compose-up
+```
+
+---
+
+## 2.4 `scripts/export-compose-images.sh`
 
 인터넷이 가능한 PC에서 실행하는 스크립트입니다.
 
@@ -115,7 +144,7 @@ sha256 체크섬 생성
 
 ---
 
-## 2.4 `scripts/load-compose-images.sh`
+## 2.5 `scripts/load-compose-images.sh`
 
 폐쇄망 서버에서 실행하는 스크립트입니다.
 
@@ -125,20 +154,20 @@ sha256 체크섬 생성
 이미지 tar.gz 파일 확인
 sha256 체크섬 검증
 gzip 무결성 검사
-표준 docker save archive 로드
+docker load 실행
 로드된 이미지 확인
 ```
 
 ---
 
-## 2.5 `scripts/preflight-onprem.sh`
+## 2.6 `scripts/preflight-docker.sh` / `scripts/preflight-podman.sh`
 
-폐쇄망 서버에서 `docker compose up` 전에 실행하는 사전 점검 스크립트입니다.
+폐쇄망 서버에서 compose up 전에 실행하는 사전 점검 스크립트입니다.
 
 역할:
 
 ```text
-Docker / Docker Compose 버전 확인
+Docker 또는 Podman / Compose provider 버전 확인
 RAM / 디스크 공간 확인
 .env 필수 값 확인
 EXTERNAL_URL / BROKER_WS_URL 검증
@@ -151,17 +180,26 @@ docker compose config 검증
 최초 실행 후 변경하면 안 되는 값 검증
 ```
 
-검증 통과 후 옵션으로 서비스 실행까지 할 수 있습니다.
+Docker 환경:
 
 ```bash
-./scripts/preflight-onprem.sh --compose-up
+./scripts/preflight-docker.sh --compose-up
 ```
+
+Podman 환경:
+
+```bash
+./scripts/preflight-podman.sh --compose-up
+```
+
+`preflight-onprem.sh`는 Docker/Podman을 자동 감지해 위 전용 스크립트 중 하나로
+위임하는 호환 wrapper입니다.
 
 ---
 
-## 2.6 `scripts/onprem-compose.sh`
+## 2.7 `scripts/onprem-compose-docker.sh` / `scripts/onprem-compose-podman.sh`
 
-설치 후 운영자가 사용하는 Docker Compose 래퍼 스크립트입니다.
+설치 후 운영자가 사용하는 Compose 래퍼 스크립트입니다.
 
 역할:
 
@@ -178,16 +216,28 @@ docker compose config 검증
 예:
 
 ```bash
-./scripts/onprem-compose.sh up
-./scripts/onprem-compose.sh restart broker
-./scripts/onprem-compose.sh recreate broker
-./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
-./scripts/onprem-compose.sh down
+./scripts/onprem-compose-docker.sh up
+./scripts/onprem-compose-docker.sh restart broker
+./scripts/onprem-compose-docker.sh recreate broker
+./scripts/onprem-compose-docker.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+./scripts/onprem-compose-docker.sh down
 ```
+
+Podman 환경에서는 다음 스크립트를 사용합니다.
+
+```bash
+./scripts/onprem-compose-podman.sh up
+./scripts/onprem-compose-podman.sh restart broker
+./scripts/onprem-compose-podman.sh recreate broker
+./scripts/onprem-compose-podman.sh down
+```
+
+`onprem-compose.sh`는 Docker/Podman을 자동 감지해 위 전용 스크립트 중 하나로
+위임하는 호환 wrapper입니다.
 
 ---
 
-## 2.7 `scripts/init-secrets.sh`
+## 2.8 `scripts/init-secrets.sh`
 
 사용자가 직접 실행하는 스크립트가 아닙니다.
 
@@ -210,9 +260,9 @@ nginx/certs/server.key 자동 생성
 폐쇄망 서버에는 다음이 필요합니다.
 
 ```text
-Docker 20.10 이상 + Docker Compose v2.20 이상
-또는 Podman 5.0 이상 + podman-compose 1.5 이상
-최소 2GB RAM
+Docker 20.10 이상
+Docker Compose v2.20 이상
+최소 4GB RAM
 최소 10GB 디스크 여유 공간
 ```
 
@@ -223,8 +273,7 @@ RAM 8GB 이상
 디스크 여유 공간 30GB 이상
 ```
 
-Docker Compose v2.20 이상 기준은 `docker-compose.override.yml`에서 `!override` 태그를 사용할 수 있기 때문입니다.
-Podman 환경에서는 `podman-docker`와 `podman-compose` 조합을 사용하며, preflight는 Docker 버전 기준이 아니라 Podman 버전 기준으로 검증합니다.
+Docker Compose v2.20 이상이 필요한 이유는 `docker-compose.override.yml`에서 `!override` 태그를 사용할 수 있기 때문입니다.
 
 ---
 
@@ -269,10 +318,6 @@ images/
 `*.services.txt`는 전체 Compose stack 기준으로 생성됩니다. 폐쇄망 서버에는
 선택하지 않은 기존 이미지가 이미 있어야 합니다.
 
-`*.tar.gz`는 최종 Compose config에서 읽은 이미지명을 그대로 `docker save`한
-표준 archive입니다. archive 내부 이미지명이 `*.archive-images.txt`와 다르면
-export 단계에서 중단합니다.
-
 ```bash
 ./scripts/export-compose-images.sh --update-service tc-fe
 ./scripts/export-compose-images.sh --update-service tc-fe --update-service auth-fe
@@ -308,7 +353,6 @@ images/
   *.tar.gz
   *.tar.gz.sha256
   *.images.txt
-  *.archive-images.txt
   *.services.txt
 ```
 
@@ -323,9 +367,6 @@ images/
 ```
 
 이 스크립트는 `images/` 디렉토리 안의 이미지 파일을 자동으로 찾아 검증 후 로드합니다.
-표준 `docker save` archive만 처리합니다. 이미지 이름은 archive manifest에
-기록된 Compose 기준 이름 그대로 검증합니다. archive 내부 이름이
-`*.archive-images.txt`와 다르면 이미지를 로드하기 전에 중단합니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 
@@ -362,17 +403,6 @@ docker compose \
   -f docker-compose.yml \
   -f docker-compose.offline.yml \
   up -d --pull never --no-build
-```
-
-Podman/podman-compose 환경에서는 Docker Compose v2의 `--pull never --no-build`
-옵션 호환성이 다르므로 다음처럼 실행합니다. 이미지는 preflight의 local image check가
-먼저 검증합니다.
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.offline.yml \
-  up -d --no-build
 ```
 
 또는 검증 후 바로 실행하려면 다음 명령을 사용합니다.
@@ -489,13 +519,6 @@ cp .env.example .env
 EXTERNAL_URL=https://your-domain.com
 BROKER_WS_URL=wss://your-domain.com/mqtt
 
-HTTP_PORT=80
-HTTPS_PORT=443
-BROKER_MQTT_PORT=1883
-BROKER_WS_PORT=8080
-BROKER_WSS_PORT=8081
-BROKER_HTTP_PORT=8888
-
 LUCY_ADMIN_EMAIL=admin@your-company.com
 LUCY_ADMIN_PASSWORD=your-secure-password
 LUCY_ADMIN_NAME=admin
@@ -602,11 +625,7 @@ DB_PASSWORD="P@ss!word"
 
 ## 5.7 Linux 권한 설정
 
-Linux 서버에서는 다음 값을 compose 실행 계정의 UID/GID로 설정합니다.
-rootless Podman 환경에서 서비스 데이터(`postgres/data`, `git/data`, `broker/data`,
-`broker/logs`)는 컨테이너 내부 UID가 기록되어 `166536` 같은 subordinate UID로 보일 수
-있으며, preflight는 root 소유만 아니면 정상으로 간주합니다. `secrets`, `nginx/certs`,
-`license`는 compose 실행 사용자 소유여야 합니다.
+Linux 서버에서는 필요에 따라 다음 값을 설정할 수 있습니다.
 
 ```env
 HOST_UID=1000
@@ -630,16 +649,15 @@ id -g
 단, 다음 자동 생성 산출물은 `root:root`여도 허용합니다.
 
 ```text
+git/data/gitea/.admin-created
+git/data/ssh/
 secrets/secrets.env
 nginx/certs/server.crt
 nginx/certs/server.key
 ```
 
-이 목록 밖의 root-owned 파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
-
-Podman을 SELinux enforcing 환경에서 실행하는 경우, bind mount 파일이 컨테이너 내부에서
-`Permission denied`로 보일 수 있습니다. 기본 compose 파일은 shared SELinux label
-옵션인 `:z`를 bind mount에 붙여 이 문제를 피합니다.
+`git/data/ssh/`는 디렉터리와 그 하위 항목을 포함합니다. 이 목록 밖의 root-owned
+파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
 
 ---
 
@@ -753,15 +771,6 @@ docker compose \
   up -d --pull never --no-build
 ```
 
-Podman/podman-compose 환경:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.offline.yml \
-  up -d --no-build
-```
-
 ---
 
 # 9. 서비스 실행
@@ -793,7 +802,7 @@ docker compose \
 
 ## 9.2 왜 `--pull never --no-build`를 사용하나요?
 
-Docker Compose 환경의 폐쇄망 서버에서는 외부 registry에 접근할 수 없습니다.
+폐쇄망 서버에서는 외부 registry에 접근할 수 없습니다.
 
 따라서 실행 시 Docker가 이미지를 pull하거나 broker를 다시 build하지 않도록 해야 합니다.
 
@@ -810,10 +819,6 @@ Docker Compose 환경의 폐쇄망 서버에서는 외부 registry에 접근할 
 로컬 build 방지
 
 이미지는 이미 `load-compose-images.sh`를 통해 로드되어 있어야 합니다.
-
-Podman/podman-compose 환경에서는 이 옵션 조합을 그대로 넘기지 않고 `up -d --no-build`를
-사용합니다. 대신 preflight가 compose image 목록과 로컬 이미지 존재 여부를 먼저
-검증하므로, 이미지 누락 상태에서는 실행 단계로 넘어가지 않습니다.
 
 ---
 
@@ -947,15 +952,6 @@ docker compose \
   up -d --pull never --no-build
 ```
 
-Podman/podman-compose 환경:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.offline.yml \
-  up -d --no-build
-```
-
 ---
 
 # 15. 초기화
@@ -981,34 +977,32 @@ rm -rf postgres/data git/data secrets/secrets.env .install-state
 
 기본적으로 `gw`는 80, 443 포트를 사용합니다.
 
-이미 해당 포트를 사용 중이거나 rootless Podman에서 1024 미만 특권 포트 publish가 허용되지
-않는다면 `.env`에서 host port를 변경합니다.
+이미 해당 포트를 사용 중이라면 `docker-compose.override.yml`을 생성하여 포트를 변경합니다.
+
+예제 파일 복사:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+```
 
 예:
 
-```env
-HTTP_PORT=18080
-HTTPS_PORT=18443
+```yaml
+services:
+  gw:
+    ports: !override
+      - "8080:80"
+      - "8443:443"
 ```
 
-브로커 host port도 `.env`에서 변경할 수 있습니다.
+`!override`를 사용하려면 Docker Compose v2.20 이상이 필요합니다.
+
+포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
 
 ```env
-BROKER_MQTT_PORT=1883
-BROKER_WS_PORT=8080
-BROKER_WSS_PORT=8081
-BROKER_HTTP_PORT=8888
+EXTERNAL_URL=https://your-domain.com:8443
+BROKER_WS_URL=wss://your-domain.com:8443/mqtt
 ```
-
-외부 HTTP/HTTPS 포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
-
-```env
-EXTERNAL_URL=https://your-domain.com:18443
-BROKER_WS_URL=wss://your-domain.com:18443/mqtt
-```
-
-rootless Podman에서 `HTTP_PORT=80`, `HTTPS_PORT=443` 같은 특권 포트를 사용할 수 없는
-상태라면 preflight가 실패하고 compose를 시작하지 않습니다.
 
 적용 전 검증:
 
@@ -1156,10 +1150,7 @@ python3 -m json.tool license/license.json
 Error creating /vernemq/data/generated.configs: permission denied
 ```
 
-`broker/data` bind mount 소유권과 컨테이너 내부 실행 UID가 맞지 않는 상태입니다.
-rootless Podman 환경에서 컨테이너 내부 UID로 bind mount가 기록되면 호스트에서는
-`166536` 같은 subordinate UID로 보일 수 있으며, 이는 서비스 데이터 디렉터리에서는
-허용됩니다.
+`broker/data` bind mount 소유권과 컨테이너 내부 `vernemq` 실행 UID가 맞지 않는 상태입니다.
 
 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
 
@@ -1174,19 +1165,8 @@ HOST_UID=1000
 HOST_GID=1000
 ```
 
-`HOST_UID`, `HOST_GID`는 preflight의 host-owned 디렉터리 검사와 Gitea `USER_UID`,
-`USER_GID` 설정에 사용됩니다. 브로커/DB/Gitea 서비스 데이터는 rootless Podman에서
-subordinate UID로 남을 수 있습니다.
-
-서비스 데이터가 아닌 `secrets`, `nginx/certs`, `license` 등이 root 또는 잘못된 사용자
-소유로 바뀐 경우에는 서비스를 내린 뒤 복구합니다. 수동 복구가 필요하면 다음 명령을
-사용합니다.
-
-```bash
-docker compose down
-sudo chown -R "$(id -u):$(id -g)" secrets nginx/certs license
-./scripts/preflight-onprem.sh --compose-up
-```
+값을 생략한 경우 브로커 entrypoint는 `/vernemq/data`의 현재 소유자를 기준으로 `vernemq`
+사용자 UID/GID를 맞춥니다.
 
 ---
 
@@ -1201,28 +1181,6 @@ WARNING: ulimit -n is 1024; 65536 is the recommended minimum.
 `broker` 서비스는 Compose 설정에서 `nofile` soft/hard limit을 `65536`으로 지정합니다.
 이 경고가 계속 보이면 서버 또는 Docker daemon의 ulimit 정책이 컨테이너 설정을 제한하는지
 확인해야 합니다.
-
----
-
-## 17.8 백엔드 `listen EACCES: permission denied 0.0.0.0:80`
-
-예:
-
-```text
-Error: listen EACCES: permission denied 0.0.0.0:80
-```
-
-rootless Podman 환경에서 non-root Node 프로세스가 컨테이너 내부 privileged port인 80을
-열려고 할 때 발생합니다. `auth-be`, `tc-be`는 내부 포트 `8080`으로 실행하고, 외부
-80/443 노출은 `gw` nginx가 담당합니다.
-
-이 오류가 보이면 현재 컨테이너가 이전 compose 설정으로 생성된 상태일 수 있으므로
-컨테이너를 재생성합니다.
-
-```bash
-docker compose down
-./scripts/preflight-onprem.sh --compose-up
-```
 
 ---
 

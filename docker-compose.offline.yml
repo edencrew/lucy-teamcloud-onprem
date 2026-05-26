@@ -1,18 +1,18 @@
 services:
   init-secrets:
-    image: localhost/lucy-teamcloud-onprem-init-secrets:offline
+    image: lucy-teamcloud-onprem-init-secrets:offline
     build:
       context: ./init-secrets
     platform: ${TARGET_PLATFORM:-linux/amd64}
     volumes: !override
-      - ./secrets:/secrets:z
-      - ./nginx/certs:/certs:z
+      - ./secrets:/secrets
+      - ./nginx/certs:/certs
     command: null
 
   broker:
     # Offline package/runtime image name for the locally built broker.
     # Keep docker-compose.yml unchanged for normal online/dev usage.
-    image: localhost/lucy-teamcloud-onprem-broker:offline
+    image: lucy-teamcloud-onprem-broker:offline
 
     # Target platform for offline packaging/runtime.
     # Example override:

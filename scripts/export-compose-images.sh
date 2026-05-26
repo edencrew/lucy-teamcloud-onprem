@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.5.0"
 
 show_help() {
   cat <<'EOF'
@@ -191,8 +191,8 @@ OUTPUT FILES
 OFFLINE SERVER USAGE
   Copy the tar.gz file to the offline server, then run:
 
-    ./scripts/load-compose-images.sh <project-name>-images-linux-amd64.tar.gz
-    ./scripts/preflight-onprem.sh --compose-up
+    docker load -i <project-name>-images-linux-amd64.tar.gz
+    docker compose up -d --pull never
 
 NOTES
   - This script reads image and service metadata from the final merged
@@ -222,9 +222,6 @@ NOTES
 
     Or run this script on an amd64 Linux machine.
 
-  - This script writes a standard docker-save archive. The saved archive must
-    contain the exact image names from the merged Compose config.
-
 EOF
 }
 
@@ -243,17 +240,6 @@ die() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
-}
-
-detect_container_runtime() {
-  local raw
-  raw="$(docker version 2>&1 || true)"
-
-  if printf '%s\n' "$raw" | grep -Eiq 'podman|libpod'; then
-    printf '%s' "podman"
-  else
-    printf '%s' "docker"
-  fi
 }
 
 script_dir() {
@@ -560,61 +546,16 @@ image_exists() {
   docker image inspect "$image" >/dev/null 2>&1
 }
 
-save_images_to_archive() {
-  local output_path="$1"
-  shift
+check_image_save() {
+  local image="$1"
+  local tmp_file="$2"
 
   if supports_docker_save_platform; then
-    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$@" | gzip > "$output_path"
+    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$image" -o "$tmp_file"
   else
-    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
-    docker save "$@" | gzip > "$output_path"
+    warn "This Docker version does not support 'docker save --platform'. Falling back to plain docker save."
+    docker save "$image" -o "$tmp_file"
   fi
-}
-
-archive_repo_tags() {
-  local archive="$1"
-
-  gzip -cd "$archive" | tar -xOf - manifest.json 2>/dev/null | awk '
-    {
-      line = $0
-      while (match(line, /"RepoTags":\[[^]]*\]/)) {
-        tags = substr(line, RSTART, RLENGTH)
-        line = substr(line, RSTART + RLENGTH)
-        while (match(tags, /"[^"]+"/)) {
-          value = substr(tags, RSTART + 1, RLENGTH - 2)
-          if (value != "RepoTags") {
-            print value
-          }
-          tags = substr(tags, RSTART + RLENGTH)
-        }
-      }
-    }
-  '
-}
-
-validate_saved_archive_image_names() {
-  local archive="$1"
-  local image_list_file="$2"
-  local tmp_dir expected_file actual_file
-
-  tmp_dir="$(mktemp -d)"
-  expected_file="$tmp_dir/expected.txt"
-  actual_file="$tmp_dir/actual.txt"
-
-  sed '/^[[:space:]]*$/d' "$image_list_file" | sort -u > "$expected_file"
-  archive_repo_tags "$archive" | sort -u > "$actual_file" || true
-
-  if ! cmp -s "$expected_file" "$actual_file"; then
-    printf '\nExpected image names from compose manifest:\n' >&2
-    sed 's/^/  /' "$expected_file" >&2
-    printf '\nImage names stored in docker-save archive:\n' >&2
-    sed 's/^/  /' "$actual_file" >&2
-    rm -rf "$tmp_dir"
-    die "Saved archive image names do not match the Compose image list."
-  fi
-
-  rm -rf "$tmp_dir"
 }
 
 sha256_file() {
@@ -674,14 +615,10 @@ main() {
   require_cmd awk
   require_cmd sed
   require_cmd sort
-  require_cmd tar
   require_cmd gzip
-  require_cmd cmp
 
   docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
   docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
-
-  CONTAINER_RUNTIME="$(detect_container_runtime)"
 
   TARGET_PLATFORM_RESOLVED="${TARGET_PLATFORM:-${PLATFORM:-linux/amd64}}"
   export TARGET_PLATFORM="$TARGET_PLATFORM_RESOLVED"
@@ -700,7 +637,6 @@ main() {
   log "Project root: $ROOT_DIR"
   log "Compose files, in merge order:$(join_by_space_quoted "${COMPOSE_FILE_LIST[@]}")"
   log "Target platform: $TARGET_PLATFORM_RESOLVED"
-  log "Container runtime: $CONTAINER_RUNTIME"
 
   log "Validating merged compose config..."
   compose config --quiet
@@ -892,6 +828,29 @@ EOF_PULL_ERROR
       fi
     done
 
+    SERVICES=()
+    while IFS= read -r svc; do
+      [ -n "$svc" ] || continue
+      SERVICES+=("$svc")
+    done <<EOF_META_SERVICES
+$(get_services_from_service_meta)
+EOF_META_SERVICES
+
+    local candidate
+    for svc in "${SERVICES[@]}"; do
+      for candidate in \
+        "${project_name}-${svc}" \
+        "${project_name}-${svc}:latest" \
+        "${project_name}_${svc}" \
+        "${project_name}_${svc}:latest"
+      do
+        if image_exists "$candidate"; then
+          if ! array_contains "$candidate" "${SAVE_IMAGES[@]}"; then
+            SAVE_IMAGES+=("$candidate")
+          fi
+        fi
+      done
+    done
   fi
 
   if [ "${#SAVE_IMAGES[@]}" -eq 0 ]; then
@@ -926,11 +885,26 @@ EOF_PULL_ERROR
     fi
   done
 
+  log "Testing docker save image by image..."
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  for img in "${SAVE_IMAGES[@]}"; do
+    log "Testing save: $img"
+    check_image_save "$img" "$tmp_dir/test.tar"
+    rm -f "$tmp_dir/test.tar"
+  done
+
   rm -f "$OUTPUT_PATH" "$OUTPUT_PATH.sha256"
 
   log "Saving all images to: $OUTPUT_PATH"
-  save_images_to_archive "$OUTPUT_PATH" "${SAVE_IMAGES[@]}"
-  validate_saved_archive_image_names "$OUTPUT_PATH" "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt"
+  if supports_docker_save_platform; then
+    docker save --platform "$TARGET_PLATFORM_RESOLVED" "${SAVE_IMAGES[@]}" | gzip > "$OUTPUT_PATH"
+  else
+    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
+    docker save "${SAVE_IMAGES[@]}" | gzip > "$OUTPUT_PATH"
+  fi
 
   sha256_file "$OUTPUT_PATH"
 
@@ -940,8 +914,8 @@ EOF_PULL_ERROR
   cat <<EOF_DONE
 
 Offline server usage:
-  ./scripts/load-compose-images.sh $OUTPUT_NAME
-  ./scripts/preflight-onprem.sh --compose-up
+  docker load -i $OUTPUT_NAME
+  docker compose up -d --pull never
 
 Files created:
   $OUTPUT_PATH

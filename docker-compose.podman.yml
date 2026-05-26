@@ -1,0 +1,87 @@
+services:
+  init-secrets:
+    image: localhost/lucy-teamcloud-onprem-init-secrets:offline
+    volumes: !override
+      - ./secrets:/secrets:z
+      - ./nginx/certs:/certs:z
+
+  gw:
+    ports: !override
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes: !override
+      - ./nginx/nginx.podman.conf:/etc/nginx/nginx.conf:ro,z
+      - ./nginx/certs:/etc/nginx/certs:ro,z
+    depends_on: !override
+      db:
+        condition: service_healthy
+      git:
+        condition: service_started
+      auth-be:
+        condition: service_healthy
+      auth-fe:
+        condition: service_started
+      tc-be:
+        condition: service_healthy
+      tc-fe:
+        condition: service_started
+
+  git:
+    environment:
+      - GITEA__server__HTTP_PORT=8080
+    volumes: !override
+      - ./git/data:/data:z
+      - ./git/app.ini:/app.ini.default:ro,z
+      - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro,z
+      - ./secrets:/run/secrets:ro,z
+    depends_on: !override
+      db:
+        condition: service_healthy
+
+  db:
+    volumes: !override
+      - ./postgres/data:/var/lib/postgresql/data:z
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro,z
+
+  broker:
+    image: localhost/lucy-teamcloud-onprem-broker:offline
+    ports: !override
+      - "${BROKER_MQTT_PORT:-1883}:1883"
+      - "${BROKER_WS_PORT:-8080}:8080"
+      - "${BROKER_WSS_PORT:-8081}:8081"
+      - "${BROKER_HTTP_PORT:-8888}:8888"
+    volumes: !override
+      - ./broker/logs:/vernemq/log:z
+      - ./broker/data:/vernemq/data:z
+      - ./broker/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro,z
+
+  auth-be:
+    depends_on: !override
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+    environment:
+      SERVICE_PORT: 8080
+    volumes: !override
+      - ./secrets:/run/secrets:ro,z
+      - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro,z
+      - ./nginx/certs:/certs:ro,z
+      - ./auth/logs:/app/logs:z
+
+  tc-be:
+    depends_on: !override
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+    environment:
+      SERVICE_PORT: 8080
+      GIT_HOST: http://git:8080
+      WEBHOOK_URL: "http://tc-be:8080/api/webhooks/gitea"
+    volumes: !override
+      - ./secrets:/run/secrets:ro,z
+      - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro,z
+      - ./license:/app/license:ro,z
+      - ./nginx/certs:/certs:ro,z
+      - ./tc/logs:/app/logs:z

@@ -43,16 +43,13 @@ else
 
   mkdir -p "$CERT_DIR"
 
-  if ! openssl req -x509 -newkey rsa:2048 -nodes \
-      -keyout "$CERT_DIR/server.key" \
-      -out "$CERT_DIR/server.crt" \
-      -days 3650 \
-      -subj "/CN=$HOST/O=Lucy TeamCloud/C=KR" \
-      -addext "subjectAltName=$SAN"; then
-    echo "[init-secrets] failed to generate certificate under $CERT_DIR." >&2
-    echo "[init-secrets] Check that $CERT_DIR/server.crt is not a directory and that the bind mount is writable." >&2
-    exit 1
-  fi
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$CERT_DIR/server.key" \
+    -out "$CERT_DIR/server.crt" \
+    -days 3650 \
+    -subj "/CN=$HOST/O=Lucy TeamCloud/C=KR" \
+    -addext "subjectAltName=$SAN" \
+    >/dev/null 2>&1
 
   chmod 644 "$CERT_DIR/server.crt"
   chmod 600 "$CERT_DIR/server.key"
