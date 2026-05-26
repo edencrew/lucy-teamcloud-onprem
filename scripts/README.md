@@ -81,7 +81,7 @@ broker:
 ```yaml
 services:
   broker:
-    image: lucy-teamcloud-onprem-broker:offline
+    image: localhost/lucy-teamcloud-onprem-broker:offline
     platform: ${TARGET_PLATFORM:-linux/amd64}
 ```
 

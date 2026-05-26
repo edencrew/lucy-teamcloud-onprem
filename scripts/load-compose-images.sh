@@ -26,7 +26,7 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 
 show_help() {
   cat <<'EOF'
@@ -306,6 +306,32 @@ docker_load_archive() {
   docker load -i "$archive"
 }
 
+ensure_local_image_available() {
+  local img="$1"
+  local fallback=""
+
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  case "$img" in
+    localhost/*)
+      fallback="${img#localhost/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
+    docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
+    printf '  INFO Retagged local image for Podman short-name safety: %s -> %s\n' "$fallback" "$img"
+    return 0
+  fi
+
+  return 1
+}
+
 verify_images_loaded() {
   local image_list_file="$1"
 
@@ -327,7 +353,7 @@ verify_images_loaded() {
   while IFS= read -r img; do
     [ -n "$img" ] || continue
 
-    if docker image inspect "$img" >/dev/null 2>&1; then
+    if ensure_local_image_available "$img"; then
       printf '  OK   %s\n' "$img"
     else
       printf '  MISS %s\n' "$img" >&2

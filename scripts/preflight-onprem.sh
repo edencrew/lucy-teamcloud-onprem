@@ -1248,6 +1248,32 @@ get_compose_images() {
   get_compose_service_meta | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' | sort -u
 }
 
+ensure_local_image_available() {
+  local img="$1"
+  local fallback=""
+
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  case "$img" in
+    localhost/*)
+      fallback="${img#localhost/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
+    docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
+    info_msg "Retagged local image for Podman short-name safety: $fallback -> $img"
+    return 0
+  fi
+
+  return 1
+}
+
 validate_local_images() {
   if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
     log "Skipping local image checks by request."
@@ -1263,7 +1289,7 @@ validate_local_images() {
     [ -n "$img" ] || continue
     count=$((count + 1))
 
-    if docker image inspect "$img" >/dev/null 2>&1; then
+    if ensure_local_image_available "$img"; then
       ok "Local image exists: $img"
     else
       fail_msg "Local image missing: $img"
