@@ -647,51 +647,12 @@ compose() {
   docker compose "${COMPOSE_ARGS[@]}" "$@"
 }
 
-compose_service_container_id() {
-  local service="$1"
-  compose ps -q "$service" 2>/dev/null | sed -n '1p'
-}
-
-wait_for_service_healthy() {
-  local service="$1"
-  local timeout="${2:-120}"
-  local elapsed=0
-  local id status
-
-  id="$(compose_service_container_id "$service")"
-  if [ -z "$id" ]; then
-    fail_msg "Could not find container for service: $service"
-    return 1
-  fi
-
-  while [ "$elapsed" -lt "$timeout" ]; do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || true)"
-    case "$status" in
-      healthy|running)
-        ok "Service is ready: $service ($status)"
-        return 0
-        ;;
-      unhealthy|exited|dead)
-        fail_msg "Service became $status while waiting: $service"
-        return 1
-        ;;
-    esac
-
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-
-  fail_msg "Timed out waiting for service readiness: $service"
-  return 1
-}
-
 compose_up_prerequisites() {
   log "Starting init-secrets one-shot service..."
   compose up --no-build init-secrets
 
   log "Starting database service..."
   compose up -d --no-build db
-  wait_for_service_healthy db 120 || return 1
 }
 
 detect_container_runtime() {

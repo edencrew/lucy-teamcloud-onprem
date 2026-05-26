@@ -380,46 +380,12 @@ compose() {
   docker compose "${COMPOSE_ARGS[@]}" "$@"
 }
 
-compose_service_container_id() {
-  local service="$1"
-  compose ps -q "$service" 2>/dev/null | sed -n '1p'
-}
-
-wait_for_service_healthy() {
-  local service="$1"
-  local timeout="${2:-120}"
-  local elapsed=0
-  local id status
-
-  id="$(compose_service_container_id "$service")"
-  [ -n "$id" ] || die "Could not find container for service: $service"
-
-  while [ "$elapsed" -lt "$timeout" ]; do
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || true)"
-    case "$status" in
-      healthy|running)
-        log "Service is ready: $service ($status)"
-        return 0
-        ;;
-      unhealthy|exited|dead)
-        die "Service became $status while waiting: $service"
-        ;;
-    esac
-
-    sleep 2
-    elapsed=$((elapsed + 2))
-  done
-
-  die "Timed out waiting for service readiness: $service"
-}
-
 compose_up_prerequisites() {
   log "Starting init-secrets one-shot service..."
   compose up --no-build init-secrets
 
   log "Starting database service..."
   compose up -d --no-build db
-  wait_for_service_healthy db 120
 }
 
 compose_with_extra_override() {
