@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.5.1"
+SCRIPT_VERSION="1.5.3"
 
 show_help() {
   cat <<'EOF'
@@ -332,6 +332,10 @@ supports_docker_save_platform() {
   docker save --help 2>/dev/null | grep -q -- '--platform'
 }
 
+supports_docker_save_format() {
+  docker save --help 2>/dev/null | grep -q -- '--format'
+}
+
 supports_docker_build_platform() {
   docker build --help 2>/dev/null | grep -q -- '--platform'
 }
@@ -565,7 +569,9 @@ check_image_save() {
   local image="$1"
   local tmp_file="$2"
 
-  if supports_docker_save_platform; then
+  if [ "$CONTAINER_RUNTIME" = "podman" ] && supports_docker_save_format; then
+    docker save --format oci-archive "$image" -o "$tmp_file"
+  elif supports_docker_save_platform; then
     docker save --platform "$TARGET_PLATFORM_RESOLVED" "$image" -o "$tmp_file"
   else
     warn "This Docker version does not support 'docker save --platform'. Falling back to plain docker save."

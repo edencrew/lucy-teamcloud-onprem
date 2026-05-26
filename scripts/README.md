@@ -325,9 +325,9 @@ images/
 
 이 스크립트는 `images/` 디렉토리 안의 이미지 파일을 자동으로 찾아 검증 후 로드합니다.
 표준 `docker save` archive와 Podman-safe bundle archive를 모두 처리합니다.
-Podman이 Docker Hub 이미지를 `localhost/postgres:17`, `localhost/nginx:1.26-alpine`
-처럼 로드한 경우에는 compose가 참조하는 `docker.io/library/...` 이름으로 자동
-retag하고, 같은 이미지 ID를 가리키는 `localhost/...` alias는 제거합니다.
+이미지 이름은 archive manifest에 기록된 compose 기준 이름 그대로 검증합니다.
+예를 들어 `nginx`, `postgres`는 `docker.io/library/...` 이름으로만 검증하며,
+`localhost/nginx`, `localhost/postgres` 같은 alias를 자동 생성하지 않습니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 
@@ -490,6 +490,13 @@ cp .env.example .env
 ```env
 EXTERNAL_URL=https://your-domain.com
 BROKER_WS_URL=wss://your-domain.com/mqtt
+
+HTTP_PORT=80
+HTTPS_PORT=443
+BROKER_MQTT_PORT=1883
+BROKER_WS_PORT=8080
+BROKER_WSS_PORT=8081
+BROKER_HTTP_PORT=8888
 
 LUCY_ADMIN_EMAIL=admin@your-company.com
 LUCY_ADMIN_PASSWORD=your-secure-password
@@ -975,32 +982,34 @@ rm -rf postgres/data git/data secrets/secrets.env .install-state
 
 기본적으로 `gw`는 80, 443 포트를 사용합니다.
 
-이미 해당 포트를 사용 중이라면 `docker-compose.override.yml`을 생성하여 포트를 변경합니다.
-
-예제 파일 복사:
-
-```bash
-cp docker-compose.override.yml.example docker-compose.override.yml
-```
+이미 해당 포트를 사용 중이거나 rootless Podman에서 1024 미만 특권 포트 publish가 허용되지
+않는다면 `.env`에서 host port를 변경합니다.
 
 예:
 
-```yaml
-services:
-  gw:
-    ports: !override
-      - "8080:80"
-      - "8443:443"
+```env
+HTTP_PORT=8080
+HTTPS_PORT=8443
 ```
 
-`!override`를 사용하려면 Docker Compose v2.20 이상이 필요합니다.
+브로커 host port도 `.env`에서 변경할 수 있습니다.
 
-포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
+```env
+BROKER_MQTT_PORT=1883
+BROKER_WS_PORT=8080
+BROKER_WSS_PORT=8081
+BROKER_HTTP_PORT=8888
+```
+
+외부 HTTP/HTTPS 포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
 
 ```env
 EXTERNAL_URL=https://your-domain.com:8443
 BROKER_WS_URL=wss://your-domain.com:8443/mqtt
 ```
+
+rootless Podman에서 `HTTP_PORT=80`, `HTTPS_PORT=443` 같은 특권 포트를 사용할 수 없는
+상태라면 preflight가 실패하고 compose를 시작하지 않습니다.
 
 적용 전 검증:
 
@@ -1189,6 +1198,28 @@ WARNING: ulimit -n is 1024; 65536 is the recommended minimum.
 `broker` 서비스는 Compose 설정에서 `nofile` soft/hard limit을 `65536`으로 지정합니다.
 이 경고가 계속 보이면 서버 또는 Docker daemon의 ulimit 정책이 컨테이너 설정을 제한하는지
 확인해야 합니다.
+
+---
+
+## 17.8 백엔드 `listen EACCES: permission denied 0.0.0.0:80`
+
+예:
+
+```text
+Error: listen EACCES: permission denied 0.0.0.0:80
+```
+
+rootless Podman 환경에서 non-root Node 프로세스가 컨테이너 내부 privileged port인 80을
+열려고 할 때 발생합니다. `auth-be`, `tc-be`는 내부 포트 `8080`으로 실행하고, 외부
+80/443 노출은 `gw` nginx가 담당합니다.
+
+이 오류가 보이면 현재 컨테이너가 이전 compose 설정으로 생성된 상태일 수 있으므로
+컨테이너를 재생성합니다.
+
+```bash
+docker compose down
+./scripts/preflight-onprem.sh --compose-up
+```
 
 ---
 

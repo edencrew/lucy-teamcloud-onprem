@@ -25,8 +25,8 @@ services:
     networks:
       - internal-network
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z  # 인증서 교체
@@ -113,10 +113,10 @@ services:
       DOCKER_VERNEMQ_LOG__CONSOLE: both
       DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: info
     ports:  # 호스트 포트는 .env 의 BROKER_*_PORT 로 조정
-      - "1883:1883"      # MQTT
-      - "8080:8080"        # WebSocket
-      - "8081:8081"       # Secured WebSocket
-      - "8888:8888"    # HTTP status port
+      - "${BROKER_MQTT_PORT:-1883}:1883"  # MQTT
+      - "${BROKER_WS_PORT:-8080}:8080"    # WebSocket
+      - "${BROKER_WSS_PORT:-8081}:8081"   # Secured WebSocket
+      - "${BROKER_HTTP_PORT:-8888}:8888"  # HTTP status port
     volumes:
       - ./broker/logs:/vernemq/log:z
       - ./broker/data:/vernemq/data:z
@@ -138,13 +138,16 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
       interval: 5s
       timeout: 3s
       retries: 10
     environment:
       SERVICE_ENV: onprem
-      SERVICE_PORT: 80
+      # Rootless Podman cannot grant non-root Node processes permission to bind
+      # privileged container ports such as 80. Keep the backend internal port
+      # unprivileged and let nginx expose 80/443 externally.
+      SERVICE_PORT: 8080
       FRONTEND_URL: ${EXTERNAL_URL}/auth
       DB_HOST: db
       DB_PORT: 5432
@@ -182,13 +185,16 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
       interval: 5s
       timeout: 3s
       retries: 10
     environment:
       SERVICE_ENV: onprem
-      SERVICE_PORT: 80
+      # Rootless Podman cannot grant non-root Node processes permission to bind
+      # privileged container ports such as 80. Keep the backend internal port
+      # unprivileged and let nginx expose 80/443 externally.
+      SERVICE_PORT: 8080
       TEAMCLOUD_URL: ${EXTERNAL_URL}
       # OIDC redirect 는 브라우저가 이 URL 로 이동하므로 외부 URL 이어야 함.
       # BE-to-BE (token 교환, JWKS 검증) 호출도 같은 URL 로 나가 nginx 경유로 auth-be 에 도달.
@@ -203,7 +209,7 @@ services:
       GIT_HOST: http://git
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
       GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
-      WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
+      WEBHOOK_URL: "http://tc-be:8080/api/webhooks/gitea"
       OIDC_CLIENT_ID: lucy-teamcloud-oidc-client-id
       # OIDC_CLIENT_SECRET 은 /run/secrets/secrets.env 와 tc-entrypoint.sh 에서 export 됨
       # broker 주소 노출용 (deprecated, tc-be 가 엔드포인트로 제공 예정)

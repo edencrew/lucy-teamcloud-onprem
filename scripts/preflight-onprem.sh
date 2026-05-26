@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.10"
+SCRIPT_VERSION="1.2.13"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -1293,76 +1293,12 @@ get_compose_images() {
 
 ensure_local_image_available() {
   local img="$1"
-  local fallback=""
-  local docker_hub_name=""
 
   if docker image inspect "$img" >/dev/null 2>&1; then
     return 0
   fi
 
-  case "$img" in
-    localhost/*)
-      fallback="${img#localhost/}"
-      if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        info_msg "Retagged local image for Podman short-name safety: $fallback -> $img"
-        return 0
-      fi
-      ;;
-    docker.io/library/*)
-      docker_hub_name="${img#docker.io/library/}"
-      fallback="localhost/$docker_hub_name"
-      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        info_msg "Retagged Docker Hub image loaded by Podman: $fallback -> $img"
-        return 0
-      fi
-
-      fallback="$docker_hub_name"
-      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        info_msg "Retagged Docker Hub short-name image: $fallback -> $img"
-        return 0
-      fi
-      ;;
-  esac
-
   return 1
-}
-
-image_id() {
-  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
-}
-
-remove_image_alias_if_same_id() {
-  local canonical="$1"
-  local alias="$2"
-  local canonical_id alias_id
-
-  [ "$canonical" != "$alias" ] || return 0
-
-  canonical_id="$(image_id "$canonical")"
-  alias_id="$(image_id "$alias")"
-
-  if [ -n "$canonical_id" ] && [ "$canonical_id" = "$alias_id" ]; then
-    if docker image rmi "$alias" >/dev/null 2>&1; then
-      info_msg "Removed redundant image alias: $alias"
-    else
-      warn "Could not remove redundant image alias, continuing: $alias"
-    fi
-  fi
-}
-
-cleanup_redundant_image_aliases() {
-  local img="$1"
-  local docker_hub_name=""
-
-  case "$img" in
-    docker.io/library/*)
-      docker_hub_name="${img#docker.io/library/}"
-      remove_image_alias_if_same_id "$img" "localhost/$docker_hub_name"
-      ;;
-  esac
 }
 
 validate_local_images() {
@@ -1381,7 +1317,6 @@ validate_local_images() {
     count=$((count + 1))
 
     if ensure_local_image_available "$img"; then
-      cleanup_redundant_image_aliases "$img"
       ok "Local image exists: $img"
     else
       fail_msg "Local image missing: $img"
@@ -1617,7 +1552,7 @@ EOF_ARCH_IMAGES
   fi
 }
 
-get_published_ports() {
+get_published_ports_raw() {
   # Parses normalized compose config ports from both Docker Compose and
   # podman-compose. Docker Compose often emits long form:
   #   published: "80"
@@ -1675,7 +1610,15 @@ get_published_ports() {
       sub(/^.*published:[[:space:]]*/, "", line)
       emit(line)
     }
-  ' | sed 's#/.*$##' | sort -n | uniq
+  ' | sed 's#/.*$##'
+}
+
+get_published_ports() {
+  get_published_ports_raw | sort -n | uniq
+}
+
+get_duplicate_published_ports() {
+  get_published_ports_raw | sort -n | uniq -d
 }
 
 is_port_in_use() {
@@ -1756,6 +1699,94 @@ EOF_PORT_OWNER_IDS
   [ "$owner_count" -gt 0 ]
 }
 
+is_privileged_port() {
+  local port="$1"
+
+  case "$port" in
+    ""|*[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  [ "$port" -gt 0 ] && [ "$port" -lt 1024 ]
+}
+
+podman_is_rootless() {
+  local value raw
+
+  if command -v podman >/dev/null 2>&1; then
+    value="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true)"
+    case "$value" in
+      true|True|TRUE)
+        return 0
+        ;;
+      false|False|FALSE)
+        return 1
+        ;;
+    esac
+  fi
+
+  value="$(docker info --format '{{.Host.Security.Rootless}}' 2>/dev/null || true)"
+  case "$value" in
+    true|True|TRUE)
+      return 0
+      ;;
+    false|False|FALSE)
+      return 1
+      ;;
+  esac
+
+  raw="$(docker info 2>/dev/null || true)"
+  printf '%s\n' "$raw" | grep -Eiq 'rootless:[[:space:]]*true|rootless[[:space:]]*=[[:space:]]*true'
+}
+
+unprivileged_port_start() {
+  local value
+
+  value="$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  if [ -r /proc/sys/net/ipv4/ip_unprivileged_port_start ]; then
+    cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null || true
+  fi
+}
+
+validate_privileged_port_permission() {
+  local port="$1"
+  local runtime threshold
+
+  is_privileged_port "$port" || return 0
+
+  runtime="$(detect_container_runtime)"
+  if [ "$runtime" != "podman" ]; then
+    ok "Host privileged port is allowed by runtime mode: $port"
+    return 0
+  fi
+
+  if ! podman_is_rootless; then
+    ok "Host privileged port is allowed by rootful Podman: $port"
+    return 0
+  fi
+
+  threshold="$(unprivileged_port_start)"
+  if [ -z "$threshold" ] || ! is_numeric_id "$threshold"; then
+    fail_msg "Cannot verify rootless Podman privileged port support for host port $port"
+    warn "Use a host port >= 1024 in .env, or configure net.ipv4.ip_unprivileged_port_start before running compose."
+    return 0
+  fi
+
+  if [ "$threshold" -le "$port" ]; then
+    ok "Host privileged port is allowed for rootless Podman: $port (ip_unprivileged_port_start=$threshold)"
+  else
+    fail_msg "Rootless Podman cannot publish host privileged port $port (ip_unprivileged_port_start=$threshold)"
+    warn "Set a non-privileged port in .env, for example HTTP_PORT=8080 and HTTPS_PORT=8443."
+    warn "Or allow low ports on the host, for example: sudo sysctl net.ipv4.ip_unprivileged_port_start=$port"
+  fi
+}
+
 validate_ports() {
   if [ "$SKIP_PORT_CHECK" = "1" ]; then
     log "Skipping port checks by request."
@@ -1772,7 +1803,13 @@ validate_ports() {
     return 0
   fi
 
-  local port status
+  local duplicate_ports port status
+  duplicate_ports="$(get_duplicate_published_ports || true)"
+  for port in $duplicate_ports; do
+    fail_msg "Host port is published more than once in compose config: $port"
+    warn "Check .env port values such as HTTP_PORT, HTTPS_PORT, BROKER_WS_PORT, and BROKER_HTTP_PORT."
+  done
+
   for port in $ports; do
     case "$port" in
       ""|*[!0-9]*)
@@ -1780,6 +1817,8 @@ validate_ports() {
         continue
         ;;
     esac
+
+    validate_privileged_port_permission "$port"
 
     if is_port_in_use "$port"; then
       if is_port_used_by_current_compose_project "$port"; then

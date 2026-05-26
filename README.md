@@ -29,6 +29,14 @@ EXTERNAL_URL=https://your-domain.com
 # EXTERNAL_URL 이 https 면 wss://, http 면 ws:// 를 사용해야 합니다.
 BROKER_WS_URL=wss://your-domain.com/mqtt
 
+# 호스트 공개 포트
+HTTP_PORT=80
+HTTPS_PORT=443
+BROKER_MQTT_PORT=1883
+BROKER_WS_PORT=8080
+BROKER_WSS_PORT=8081
+BROKER_HTTP_PORT=8888
+
 # Lucy 서비스 관리자 계정
 LUCY_ADMIN_EMAIL=admin@your-company.com
 LUCY_ADMIN_PASSWORD=your-secure-password
@@ -49,6 +57,7 @@ TZ=Asia/Seoul
 |------|----------|
 | `EXTERNAL_URL` | `localhost`, `127.0.0.1` 사용 불가. 반드시 외부에서 접근 가능한 주소 입력 |
 | `BROKER_WS_URL` | `EXTERNAL_URL` 의 스킴과 짝을 맞출 것 (`https` → `wss://`, `http` → `ws://`). 기본 경로는 `/mqtt` |
+| `HTTP_PORT`, `HTTPS_PORT` | 외부 접속용 host port. 1024 미만 포트는 rootless Podman에서 OS 설정에 따라 막힐 수 있으며 preflight가 검증 |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요 (예: `DB_PASSWORD="P@ss!word"`) |
 | Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
@@ -315,28 +324,15 @@ docker compose ps -a
 
 ### 포트 충돌
 
-기본 포트(80, 443)가 사용 중인 경우 `docker-compose.override.yml`로 호스트 포트를 변경하세요.
-원본 `docker-compose.yml`은 직접 수정하지 않으므로 업데이트 시 충돌이 없습니다.
+기본 포트(80, 443)가 사용 중이거나 rootless Podman에서 특권 포트 publish가 허용되지 않으면
+`.env`의 host port를 변경하세요.
 
-**1. 예제 파일 복사:**
-
-```bash
-cp docker-compose.override.yml.example docker-compose.override.yml
+```env
+HTTP_PORT=8080
+HTTPS_PORT=8443
 ```
 
-**2. `docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
-
-```yaml
-services:
-  gw:
-    ports: !override
-      - "8080:80"
-      - "8443:443"
-```
-
-> `!override` 태그는 원본 `docker-compose.yml`의 `ports` 리스트를 대체합니다. (없으면 두 리스트가 합쳐져 80/443 매핑이 함께 남아 충돌이 발생합니다. Docker Compose v2.20.0+ 필요.)
-
-**3. `.env` 파일의 `EXTERNAL_URL`에도 포트 반영:**
+`.env` 파일의 `EXTERNAL_URL`에도 포트를 반영합니다.
 
 ```bash
 # 기본 포트 사용 시
@@ -346,7 +342,7 @@ EXTERNAL_URL=https://your-domain.com
 EXTERNAL_URL=https://your-domain.com:8443
 ```
 
-**4. 적용:**
+적용:
 
 ```bash
 docker compose up -d

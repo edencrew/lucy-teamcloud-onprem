@@ -26,7 +26,7 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.4"
 
 show_help() {
   cat <<'EOF'
@@ -399,76 +399,12 @@ load_image_bundle() {
 
 ensure_local_image_available() {
   local img="$1"
-  local fallback=""
-  local docker_hub_name=""
 
   if docker image inspect "$img" >/dev/null 2>&1; then
     return 0
   fi
 
-  case "$img" in
-    localhost/*)
-      fallback="${img#localhost/}"
-      if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        printf '  INFO Retagged local image for Podman short-name safety: %s -> %s\n' "$fallback" "$img"
-        return 0
-      fi
-      ;;
-    docker.io/library/*)
-      docker_hub_name="${img#docker.io/library/}"
-      fallback="localhost/$docker_hub_name"
-      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        printf '  INFO Retagged Docker Hub image loaded by Podman: %s -> %s\n' "$fallback" "$img"
-        return 0
-      fi
-
-      fallback="$docker_hub_name"
-      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-        printf '  INFO Retagged Docker Hub short-name image: %s -> %s\n' "$fallback" "$img"
-        return 0
-      fi
-      ;;
-  esac
-
   return 1
-}
-
-image_id() {
-  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
-}
-
-remove_image_alias_if_same_id() {
-  local canonical="$1"
-  local alias="$2"
-  local canonical_id alias_id
-
-  [ "$canonical" != "$alias" ] || return 0
-
-  canonical_id="$(image_id "$canonical")"
-  alias_id="$(image_id "$alias")"
-
-  if [ -n "$canonical_id" ] && [ "$canonical_id" = "$alias_id" ]; then
-    if docker image rmi "$alias" >/dev/null 2>&1; then
-      printf '  INFO Removed redundant image alias: %s\n' "$alias"
-    else
-      printf '  WARN Could not remove redundant image alias, continuing: %s\n' "$alias" >&2
-    fi
-  fi
-}
-
-cleanup_redundant_image_aliases() {
-  local img="$1"
-  local docker_hub_name=""
-
-  case "$img" in
-    docker.io/library/*)
-      docker_hub_name="${img#docker.io/library/}"
-      remove_image_alias_if_same_id "$img" "localhost/$docker_hub_name"
-      ;;
-  esac
 }
 
 verify_images_loaded() {
@@ -493,7 +429,6 @@ verify_images_loaded() {
     [ -n "$img" ] || continue
 
     if ensure_local_image_available "$img"; then
-      cleanup_redundant_image_aliases "$img"
       printf '  OK   %s\n' "$img"
     else
       printf '  MISS %s\n' "$img" >&2
