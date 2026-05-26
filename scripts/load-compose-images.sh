@@ -26,7 +26,7 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.1.4"
+SCRIPT_VERSION="1.1.5"
 
 show_help() {
   cat <<'EOF'
@@ -407,6 +407,86 @@ ensure_local_image_available() {
   return 1
 }
 
+image_id() {
+  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
+}
+
+remove_image_tag() {
+  local tag="$1"
+
+  if command -v podman >/dev/null 2>&1; then
+    if podman untag "$tag" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if podman image untag "$tag" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  if docker image rmi "$tag" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  docker rmi "$tag" >/dev/null 2>&1
+}
+
+normalize_loaded_image_name() {
+  local expected="$1"
+  local docker_hub_name candidate expected_id candidate_id
+
+  if docker image inspect "$expected" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  case "$expected" in
+    docker.io/library/*)
+      docker_hub_name="${expected#docker.io/library/}"
+      for candidate in "localhost/$docker_hub_name" "$docker_hub_name"; do
+        if ! docker image inspect "$candidate" >/dev/null 2>&1; then
+          continue
+        fi
+
+        if docker image tag "$candidate" "$expected" >/dev/null 2>&1; then
+          printf '  INFO Normalized Docker Hub image name after load: %s -> %s\n' "$candidate" "$expected"
+
+          expected_id="$(image_id "$expected")"
+          candidate_id="$(image_id "$candidate")"
+          if [ -n "$expected_id" ] && [ "$expected_id" = "$candidate_id" ]; then
+            if remove_image_tag "$candidate"; then
+              printf '  INFO Removed non-canonical loaded image tag: %s\n' "$candidate"
+            else
+              die "Could not remove non-canonical loaded image tag after restoring $expected: $candidate"
+            fi
+          fi
+
+          return 0
+        fi
+      done
+      ;;
+  esac
+
+  return 1
+}
+
+restore_loaded_image_names() {
+  local image_list_file="$1"
+  local img=""
+
+  if [ ! -f "$image_list_file" ]; then
+    return 0
+  fi
+
+  while IFS= read -r img; do
+    [ -n "$img" ] || continue
+
+    # Standard docker-save archives can store Docker Hub library images as
+    # short names like nginx:tag. Podman loads those short names as localhost/*.
+    # Restore the canonical names recorded by export-compose-images.sh.
+    normalize_loaded_image_name "$img" || true
+  done < "$image_list_file"
+}
+
 verify_images_loaded() {
   local image_list_file="$1"
 
@@ -591,6 +671,7 @@ main() {
   verify_checksum "$archive" "$checksum_file"
   verify_gzip "$archive"
   docker_load_archive "$archive"
+  restore_loaded_image_names "$image_list_file"
   verify_images_loaded "$image_list_file"
   verify_image_id_sanity "$image_list_file"
 
