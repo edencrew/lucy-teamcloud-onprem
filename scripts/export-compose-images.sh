@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.5.1"
 
 show_help() {
   cat <<'EOF'
@@ -191,8 +191,8 @@ OUTPUT FILES
 OFFLINE SERVER USAGE
   Copy the tar.gz file to the offline server, then run:
 
-    docker load -i <project-name>-images-linux-amd64.tar.gz
-    docker compose up -d --pull never
+    ./scripts/load-compose-images.sh <project-name>-images-linux-amd64.tar.gz
+    ./scripts/preflight-onprem.sh --compose-up
 
 NOTES
   - This script reads image and service metadata from the final merged
@@ -222,6 +222,10 @@ NOTES
 
     Or run this script on an amd64 Linux machine.
 
+  - When the Docker CLI is backed by Podman, this script writes an
+    image-by-image bundle archive to avoid Podman's multi-image docker-archive
+    tag corruption. Load it with load-compose-images.sh, not raw docker load.
+
 EOF
 }
 
@@ -240,6 +244,17 @@ die() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+detect_container_runtime() {
+  local raw
+  raw="$(docker version 2>&1 || true)"
+
+  if printf '%s\n' "$raw" | grep -Eiq 'podman|libpod'; then
+    printf '%s' "podman"
+  else
+    printf '%s' "docker"
+  fi
 }
 
 script_dir() {
@@ -558,6 +573,50 @@ check_image_save() {
   fi
 }
 
+save_images_as_podman_bundle() {
+  local output_path="$1"
+  shift
+
+  local tmp_dir bundle_dir manifest index image rel_path
+  tmp_dir="$(mktemp -d)"
+  bundle_dir="$tmp_dir/lucy-image-bundle-v1"
+  manifest="$bundle_dir/manifest.tsv"
+
+  mkdir -p "$bundle_dir/images"
+  : > "$manifest"
+
+  index=1
+  for image in "$@"; do
+    rel_path="$(printf 'images/image-%06d.tar' "$index")"
+    printf '%s\t%s\t%s\n' "$index" "$image" "$rel_path" >> "$manifest"
+    log "Saving bundle image: $image"
+    check_image_save "$image" "$bundle_dir/$rel_path"
+    index=$((index + 1))
+  done
+
+  (
+    cd "$tmp_dir"
+    tar -cf - lucy-image-bundle-v1
+  ) | gzip > "$output_path"
+
+  rm -rf "$tmp_dir"
+}
+
+save_images_to_archive() {
+  local output_path="$1"
+  shift
+
+  if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+    log "Podman runtime detected. Saving image-by-image bundle to avoid multi-image docker-archive tag corruption."
+    save_images_as_podman_bundle "$output_path" "$@"
+  elif supports_docker_save_platform; then
+    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$@" | gzip > "$output_path"
+  else
+    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
+    docker save "$@" | gzip > "$output_path"
+  fi
+}
+
 sha256_file() {
   local file="$1"
 
@@ -615,10 +674,13 @@ main() {
   require_cmd awk
   require_cmd sed
   require_cmd sort
+  require_cmd tar
   require_cmd gzip
 
   docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
   docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
+
+  CONTAINER_RUNTIME="$(detect_container_runtime)"
 
   TARGET_PLATFORM_RESOLVED="${TARGET_PLATFORM:-${PLATFORM:-linux/amd64}}"
   export TARGET_PLATFORM="$TARGET_PLATFORM_RESOLVED"
@@ -637,6 +699,7 @@ main() {
   log "Project root: $ROOT_DIR"
   log "Compose files, in merge order:$(join_by_space_quoted "${COMPOSE_FILE_LIST[@]}")"
   log "Target platform: $TARGET_PLATFORM_RESOLVED"
+  log "Container runtime: $CONTAINER_RUNTIME"
 
   log "Validating merged compose config..."
   compose config --quiet
@@ -899,12 +962,7 @@ EOF_META_SERVICES
   rm -f "$OUTPUT_PATH" "$OUTPUT_PATH.sha256"
 
   log "Saving all images to: $OUTPUT_PATH"
-  if supports_docker_save_platform; then
-    docker save --platform "$TARGET_PLATFORM_RESOLVED" "${SAVE_IMAGES[@]}" | gzip > "$OUTPUT_PATH"
-  else
-    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
-    docker save "${SAVE_IMAGES[@]}" | gzip > "$OUTPUT_PATH"
-  fi
+  save_images_to_archive "$OUTPUT_PATH" "${SAVE_IMAGES[@]}"
 
   sha256_file "$OUTPUT_PATH"
 
@@ -914,8 +972,8 @@ EOF_META_SERVICES
   cat <<EOF_DONE
 
 Offline server usage:
-  docker load -i $OUTPUT_NAME
-  docker compose up -d --pull never
+  ./scripts/load-compose-images.sh $OUTPUT_NAME
+  ./scripts/preflight-onprem.sh --compose-up
 
 Files created:
   $OUTPUT_PATH

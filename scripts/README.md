@@ -125,7 +125,7 @@ sha256 체크섬 생성
 이미지 tar.gz 파일 확인
 sha256 체크섬 검증
 gzip 무결성 검사
-docker load 실행
+표준 docker save archive 또는 Podman-safe bundle 로드
 로드된 이미지 확인
 ```
 
@@ -269,6 +269,11 @@ images/
 `*.services.txt`는 전체 Compose stack 기준으로 생성됩니다. 폐쇄망 서버에는
 선택하지 않은 기존 이미지가 이미 있어야 합니다.
 
+Podman 기반 Docker CLI에서 export하는 경우, `*.tar.gz`는 여러 이미지를 한 번에
+`docker save`한 archive가 아니라 이미지별 save 파일을 묶은 bundle 형식으로
+생성됩니다. Podman의 multi-image docker archive tag corruption을 피하기 위한
+형식이므로, 폐쇄망 서버에서는 반드시 `load-compose-images.sh`로 로드합니다.
+
 ```bash
 ./scripts/export-compose-images.sh --update-service tc-fe
 ./scripts/export-compose-images.sh --update-service tc-fe --update-service auth-fe
@@ -304,6 +309,7 @@ images/
   *.tar.gz
   *.tar.gz.sha256
   *.images.txt
+  *.archive-images.txt
   *.services.txt
 ```
 
@@ -318,6 +324,7 @@ images/
 ```
 
 이 스크립트는 `images/` 디렉토리 안의 이미지 파일을 자동으로 찾아 검증 후 로드합니다.
+표준 `docker save` archive와 Podman-safe bundle archive를 모두 처리합니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 

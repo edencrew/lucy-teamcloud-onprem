@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.5"
+SCRIPT_VERSION="1.2.6"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -1360,7 +1360,7 @@ validate_offline_image_identities() {
     "the locally built init-secrets image"
 
   validate_image_metadata_contains \
-    "postgres:17" \
+    "docker.io/library/postgres:17" \
     "PG_VERSION" \
     "the official PostgreSQL image"
 }
