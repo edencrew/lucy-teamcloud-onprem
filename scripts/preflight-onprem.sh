@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.15"
+SCRIPT_VERSION="1.2.16"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -152,7 +152,8 @@ CHECKS PERFORMED
   - Minimum RAM and disk
   - .env exists and required values are present
   - EXTERNAL_URL is valid and not localhost / 127.0.0.1 / 0.0.0.0
-  - BROKER_WS_URL scheme matches EXTERNAL_URL scheme
+  - EXTERNAL_URL and BROKER_WS_URL ports match published gateway ports
+  - BROKER_WS_URL scheme, hostname, and port match EXTERNAL_URL
   - LUCY_ADMIN_NAME is admin
   - license/license.json exists, non-empty, and JSON-valid when jq/python exists
   - runtime bind mount directories exist before Docker Compose can auto-create them as root
@@ -870,6 +871,70 @@ url_host() {
   printf '%s' "$host"
 }
 
+url_authority() {
+  local url="$1"
+  local no_scheme authority
+  no_scheme="$(printf '%s' "$url" | sed 's#^[A-Za-z][A-Za-z0-9+.-]*://##')"
+  authority="$(printf '%s' "$no_scheme" | sed 's#^[^@]*@##' | sed 's#/.*##')"
+  printf '%s' "$authority"
+}
+
+url_explicit_port() {
+  local url="$1"
+  local authority
+  authority="$(url_authority "$url")"
+
+  case "$authority" in
+    \[*\]:[0-9]*)
+      printf '%s' "$authority" | sed -n 's#^\[[^]]*\]:\([0-9][0-9]*\)$#\1#p'
+      ;;
+    *:*:*)
+      # Unbracketed IPv6 address without an explicit port.
+      ;;
+    *:[0-9]*)
+      printf '%s' "$authority" | sed -n 's#^[^:]*:\([0-9][0-9]*\)$#\1#p'
+      ;;
+  esac
+}
+
+default_port_for_scheme() {
+  case "$1" in
+    http|ws)
+      printf '%s' "80"
+      ;;
+    https|wss)
+      printf '%s' "443"
+      ;;
+  esac
+}
+
+url_effective_port() {
+  local url="$1"
+  local scheme="$2"
+  local explicit
+  explicit="$(url_explicit_port "$url")"
+
+  if [ -n "$explicit" ]; then
+    printf '%s' "$explicit"
+  else
+    default_port_for_scheme "$scheme"
+  fi
+}
+
+format_external_url_hint() {
+  local scheme="$1"
+  local host="$2"
+  local port="$3"
+  local default_port
+
+  default_port="$(default_port_for_scheme "$scheme")"
+  if [ "$port" = "$default_port" ]; then
+    printf '%s://%s' "$scheme" "$host"
+  else
+    printf '%s://%s:%s' "$scheme" "$host" "$port"
+  fi
+}
+
 is_localhost_host() {
   local host="$1"
 
@@ -925,6 +990,7 @@ validate_urls() {
   log "Checking URL settings..."
 
   local external_url broker_ws_url ext_scheme broker_scheme ext_host broker_host
+  local ext_port expected_ext_port ext_port_key broker_port expected_broker_url
   external_url="$(get_env_value EXTERNAL_URL)"
   broker_ws_url="$(get_env_value BROKER_WS_URL)"
 
@@ -953,6 +1019,37 @@ validate_urls() {
     ok "EXTERNAL_URL hostname is $ext_host"
   fi
 
+  case "$ext_scheme" in
+    http)
+      ext_port_key="HTTP_PORT"
+      expected_ext_port="$(get_env_value HTTP_PORT)"
+      expected_ext_port="${expected_ext_port:-80}"
+      ;;
+    https)
+      ext_port_key="HTTPS_PORT"
+      expected_ext_port="$(get_env_value HTTPS_PORT)"
+      expected_ext_port="${expected_ext_port:-443}"
+      ;;
+    *)
+      ext_port_key=""
+      expected_ext_port=""
+      ;;
+  esac
+
+  if [ -n "$expected_ext_port" ]; then
+    if ! is_numeric_id "$expected_ext_port"; then
+      fail_msg "$ext_port_key must be numeric: $expected_ext_port"
+    else
+      ext_port="$(url_effective_port "$external_url" "$ext_scheme")"
+      if [ "$ext_port" = "$expected_ext_port" ]; then
+        ok "EXTERNAL_URL port matches $ext_port_key ($expected_ext_port)"
+      else
+        fail_msg "EXTERNAL_URL port ($ext_port) must match $ext_port_key ($expected_ext_port)"
+        warn "Suggested fix: EXTERNAL_URL=$(format_external_url_hint "$ext_scheme" "$ext_host" "$expected_ext_port")"
+      fi
+    fi
+  fi
+
   if [ -z "$broker_ws_url" ]; then
     fail_msg "BROKER_WS_URL is empty"
     return 0
@@ -977,6 +1074,28 @@ validate_urls() {
   else
     ok "BROKER_WS_URL scheme matches EXTERNAL_URL"
   fi
+
+  if [ -n "$broker_host" ] && [ -n "$ext_host" ]; then
+    if [ "$broker_host" = "$ext_host" ]; then
+      ok "BROKER_WS_URL hostname matches EXTERNAL_URL"
+    else
+      fail_msg "BROKER_WS_URL hostname ($broker_host) must match EXTERNAL_URL hostname ($ext_host)"
+    fi
+  fi
+
+  case "$ext_scheme:$broker_scheme" in
+    http:ws|https:wss)
+      ext_port="$(url_effective_port "$external_url" "$ext_scheme")"
+      broker_port="$(url_effective_port "$broker_ws_url" "$broker_scheme")"
+      if [ "$broker_port" = "$ext_port" ]; then
+        ok "BROKER_WS_URL port matches EXTERNAL_URL ($broker_port)"
+      else
+        fail_msg "BROKER_WS_URL port ($broker_port) must match EXTERNAL_URL port ($ext_port)"
+        expected_broker_url="$(format_external_url_hint "$broker_scheme" "$ext_host" "$ext_port")/mqtt"
+        warn "Suggested fix: BROKER_WS_URL=$expected_broker_url"
+      fi
+      ;;
+  esac
 
   case "$broker_ws_url" in
     */mqtt|*/mqtt/)
