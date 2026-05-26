@@ -986,8 +986,8 @@ rm -rf postgres/data git/data secrets/secrets.env .install-state
 예:
 
 ```env
-HTTP_PORT=8080
-HTTPS_PORT=8443
+HTTP_PORT=18080
+HTTPS_PORT=18443
 ```
 
 브로커 host port도 `.env`에서 변경할 수 있습니다.
@@ -1002,8 +1002,8 @@ BROKER_HTTP_PORT=8888
 외부 HTTP/HTTPS 포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
 
 ```env
-EXTERNAL_URL=https://your-domain.com:8443
-BROKER_WS_URL=wss://your-domain.com:8443/mqtt
+EXTERNAL_URL=https://your-domain.com:18443
+BROKER_WS_URL=wss://your-domain.com:18443/mqtt
 ```
 
 rootless Podman에서 `HTTP_PORT=80`, `HTTPS_PORT=443` 같은 특권 포트를 사용할 수 없는
@@ -1158,6 +1158,8 @@ Error creating /vernemq/data/generated.configs: permission denied
 `broker/data` bind mount 소유권과 컨테이너 내부 실행 UID가 맞지 않는 상태입니다.
 rootless Podman 환경에서 이전 broker entrypoint가 컨테이너 내부 UID로 bind mount를 `chown`한
 경우, 호스트에서는 `166536` 같은 subordinate UID로 보일 수 있습니다.
+`git/data`도 Gitea가 관리하는 서비스 데이터라 rootless Podman 환경에서는 subordinate UID로
+보일 수 있으며, preflight는 이를 host-owned 런타임 디렉터리처럼 되돌리지 않습니다.
 
 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
 
@@ -1179,7 +1181,7 @@ HOST_GID=1000
 
 ```bash
 docker compose down
-sudo chown -R "$(id -u):$(id -g)" git/data broker/data broker/logs
+sudo chown -R "$(id -u):$(id -g)" broker/data broker/logs
 ./scripts/preflight-onprem.sh --compose-up
 ```
 

@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.14"
+SCRIPT_VERSION="1.2.15"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -542,7 +542,7 @@ prepare_service_owned_directory() {
       fi
     else
       fail_msg "Service data directory contains root-owned entries: $rel"
-      warn "Preflight does not recursively chown existing PostgreSQL data."
+      warn "Preflight does not recursively chown existing service data."
       warn "Root-owned sample:"
       print_root_owned_sample "$full" >&2
     fi
@@ -1811,15 +1811,16 @@ validate_privileged_port_permission() {
   if [ -z "$threshold" ] || ! is_numeric_id "$threshold"; then
     fail_msg "Cannot verify rootless Podman privileged port support for host port $port"
     warn "Use a host port >= 1024 in .env, or configure net.ipv4.ip_unprivileged_port_start before running compose."
-    return 0
+    return 1
   fi
 
   if [ "$threshold" -le "$port" ]; then
     ok "Host privileged port is allowed for rootless Podman: $port (ip_unprivileged_port_start=$threshold)"
   else
     fail_msg "Rootless Podman cannot publish host privileged port $port (ip_unprivileged_port_start=$threshold)"
-    warn "Set a non-privileged port in .env, for example HTTP_PORT=8080 and HTTPS_PORT=8443."
+    warn "Set non-privileged host ports in .env, for example HTTP_PORT=18080 and HTTPS_PORT=18443."
     warn "Or allow low ports on the host, for example: sudo sysctl net.ipv4.ip_unprivileged_port_start=$port"
+    return 1
   fi
 }
 
@@ -1854,7 +1855,7 @@ validate_ports() {
         ;;
     esac
 
-    validate_privileged_port_permission "$port"
+    validate_privileged_port_permission "$port" || continue
 
     if is_port_in_use "$port"; then
       if is_port_used_by_current_compose_project "$port"; then
@@ -1878,7 +1879,7 @@ prepare_and_validate_directories() {
 
   resolve_runtime_owner || return 0
 
-  local host_owned_dirs="git/data broker/data broker/logs secrets nginx/certs license"
+  local host_owned_dirs="broker/data broker/logs secrets nginx/certs license"
   local d
 
   for d in $host_owned_dirs; do
@@ -1886,6 +1887,7 @@ prepare_and_validate_directories() {
   done
 
   prepare_service_owned_directory "postgres/data"
+  prepare_service_owned_directory "git/data"
 }
 
 hash_command() {

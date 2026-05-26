@@ -328,8 +328,8 @@ docker compose ps -a
 `.env`의 host port를 변경하세요.
 
 ```env
-HTTP_PORT=8080
-HTTPS_PORT=8443
+HTTP_PORT=18080
+HTTPS_PORT=18443
 ```
 
 `.env` 파일의 `EXTERNAL_URL`에도 포트를 반영합니다.
@@ -338,8 +338,8 @@ HTTPS_PORT=8443
 # 기본 포트 사용 시
 EXTERNAL_URL=https://your-domain.com
 
-# 8443 포트 사용 시
-EXTERNAL_URL=https://your-domain.com:8443
+# 18443 포트 사용 시
+EXTERNAL_URL=https://your-domain.com:18443
 ```
 
 적용:
