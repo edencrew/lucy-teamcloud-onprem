@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.8"
+SCRIPT_VERSION="1.2.10"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -260,6 +260,36 @@ is_numeric_id() {
   esac
 }
 
+path_owner_id() {
+  local path="$1"
+  local owner
+
+  owner="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
+  if [ -n "$owner" ]; then
+    printf '%s' "$owner"
+    return 0
+  fi
+
+  owner="$(stat -f '%u:%g' "$path" 2>/dev/null || true)"
+  printf '%s' "$owner"
+}
+
+warn_if_subuid_owner_mismatch() {
+  local path="$1"
+  local owner uid
+
+  owner="$(path_owner_id "$path")"
+  [ -n "$owner" ] || return 0
+
+  warn "Mismatched owner uid:gid: $owner"
+  uid="${owner%%:*}"
+
+  if is_numeric_id "$uid" && [ "$uid" -ge 65536 ]; then
+    warn "This looks like a rootless Podman subordinate UID written from inside a container."
+    warn "Stop services before repairing ownership, then run the suggested sudo chown command below."
+  fi
+}
+
 resolve_runtime_owner() {
   local env_uid env_gid current_uid current_gid
   local invalid_owner
@@ -479,6 +509,7 @@ prepare_host_owned_directory() {
     else
       fail_msg "Directory ownership mismatch and automatic chown failed: $rel"
       warn "First mismatched path: $mismatch"
+      warn_if_subuid_owner_mismatch "$mismatch"
       warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
       return 0
     fi
@@ -1299,6 +1330,41 @@ ensure_local_image_available() {
   return 1
 }
 
+image_id() {
+  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
+}
+
+remove_image_alias_if_same_id() {
+  local canonical="$1"
+  local alias="$2"
+  local canonical_id alias_id
+
+  [ "$canonical" != "$alias" ] || return 0
+
+  canonical_id="$(image_id "$canonical")"
+  alias_id="$(image_id "$alias")"
+
+  if [ -n "$canonical_id" ] && [ "$canonical_id" = "$alias_id" ]; then
+    if docker image rmi "$alias" >/dev/null 2>&1; then
+      info_msg "Removed redundant image alias: $alias"
+    else
+      warn "Could not remove redundant image alias, continuing: $alias"
+    fi
+  fi
+}
+
+cleanup_redundant_image_aliases() {
+  local img="$1"
+  local docker_hub_name=""
+
+  case "$img" in
+    docker.io/library/*)
+      docker_hub_name="${img#docker.io/library/}"
+      remove_image_alias_if_same_id "$img" "localhost/$docker_hub_name"
+      ;;
+  esac
+}
+
 validate_local_images() {
   if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
     log "Skipping local image checks by request."
@@ -1315,6 +1381,7 @@ validate_local_images() {
     count=$((count + 1))
 
     if ensure_local_image_available "$img"; then
+      cleanup_redundant_image_aliases "$img"
       ok "Local image exists: $img"
     else
       fail_msg "Local image missing: $img"

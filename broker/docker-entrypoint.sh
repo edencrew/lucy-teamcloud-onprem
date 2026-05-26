@@ -11,11 +11,40 @@ ts(){ date +'%H:%M:%S'; }
 log(){ echo "[$(ts)] $*"; }
 die(){ echo "[$(ts)] [error] $*" >&2; exit 1; }
 
+ROOTLESS_USERNS=0
+VMQ_RUN_AS_ROOT=0
+
+detect_rootless_userns() {
+  local inside outside count
+
+  [ -r /proc/self/uid_map ] || return 1
+  read -r inside outside count < /proc/self/uid_map || return 1
+  [[ "$inside" == "0" && "$outside" != "0" ]]
+}
+
+if [[ "$(id -u)" == "0" ]] && detect_rootless_userns; then
+  ROOTLESS_USERNS=1
+  VMQ_RUN_AS_ROOT=1
+  log "[entrypoint] rootless user namespace detected; running as container root and skipping bind-mount chown"
+fi
+
+should_run_as_vmq_user() {
+  [[ "$(id -u)" == "0" && "$VMQ_RUN_AS_ROOT" != "1" ]]
+}
+
+chown_vmq() {
+  if [[ "$VMQ_RUN_AS_ROOT" == "1" ]]; then
+    return 0
+  fi
+
+  chown "$@"
+}
+
 # vernemq 명령을 항상 동일 ENV로 실행
 as_vmq() {
   local erts_bin; erts_bin="$(ls -d /vernemq/erts-*/bin 2>/dev/null | head -1)"
   local PATH_VMQ="${erts_bin:+$erts_bin:}/vernemq/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-  if [[ "$(id -u)" == "0" ]]; then
+  if should_run_as_vmq_user; then
     runuser -u vernemq -m -- env \
       HOME="${VMQ_HOME}" \
       PATH="$PATH_VMQ" \
@@ -75,6 +104,10 @@ ensure_owned_recursive() {
   local gid="$3"
   local mismatch
 
+  if [[ "$VMQ_RUN_AS_ROOT" == "1" ]]; then
+    return 0
+  fi
+
   [ -e "$path" ] || return 0
 
   mismatch="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
@@ -89,6 +122,10 @@ prepare_vmq_paths() {
     return 0
   fi
 
+  if [[ "$VMQ_RUN_AS_ROOT" == "1" ]]; then
+    return 0
+  fi
+
   ensure_owned_recursive "${ETC_DIR}" "$VMQ_UID" "$VMQ_GID"
   ensure_owned_recursive "${VMQ_HOME}/data" "$VMQ_UID" "$VMQ_GID"
   ensure_owned_recursive "${RUNNER_LOG_DIR}" "$VMQ_UID" "$VMQ_GID"
@@ -99,6 +136,12 @@ remap_vmq_user() {
   local data_uid data_gid has_explicit_owner
 
   if [[ "$(id -u)" != "0" ]]; then
+    return 0
+  fi
+
+  if [[ "$ROOTLESS_USERNS" == "1" ]]; then
+    unset VMQ_UID
+    unset VMQ_GID
     return 0
   fi
 
@@ -146,7 +189,7 @@ mkdir -p "${RUNNER_LOG_DIR}/VerneMQ" "${PIPE_DIR}"
 chmod 1777 "${PIPE_DIR}" || true
 prepare_vmq_paths
 LOG_FILE="${RUNNER_LOG_DIR}/VerneMQ/console.log"; : > "${LOG_FILE}" || true
-chown vernemq:vernemq "${LOG_FILE}" || true
+chown_vmq vernemq:vernemq "${LOG_FILE}" || true
 
 # 1) 네트워크 정보
 detect_iface(){ ip -o route show default 2>/dev/null | awk '{print $5; exit}'; }
@@ -168,7 +211,7 @@ cat >/vernemq/etc/inetrc <<'EOF'
 {lookup, [file, dns]}.
 {hosts_file, "/vernemq/etc/hosts"}.
 EOF
-chown vernemq:vernemq /vernemq/etc/hosts /vernemq/etc/inetrc || true
+chown_vmq vernemq:vernemq /vernemq/etc/hosts /vernemq/etc/inetrc || true
 export ERL_INETRC=/vernemq/etc/inetrc
 log "[diag] ERL_INETRC=${ERL_INETRC}"
 
@@ -210,7 +253,7 @@ maybe_generate_vm_args(){
 -kernel inet_dist_use_interface ${TUPLE}
 EOF
 
-  chown vernemq:vernemq "${VM_ARGS}" || true
+  chown_vmq vernemq:vernemq "${VM_ARGS}" || true
   log "[vm.args] generated at ${VM_ARGS}"
   fi
 
@@ -218,14 +261,14 @@ EOF
   local cookie; cookie="$(awk '$1=="-setcookie"{print $2}' "${VM_ARGS}" | head -1 || true)"
   [[ -z "$cookie" ]] && cookie="vmq"
   printf '%s' "$cookie" > "${VMQ_HOME}/.erlang.cookie"
-  chown vernemq:vernemq "${VMQ_HOME}/.erlang.cookie" || true
+  chown_vmq vernemq:vernemq "${VMQ_HOME}/.erlang.cookie" || true
   chmod 400 "${VMQ_HOME}/.erlang.cookie" || true
 }
 maybe_generate_vm_args
 
 # 3) 환경변수 → vernemq.conf (USER_*는 비번파일)
 : > "${CONF_FILE}"
-chown vernemq:vernemq "${CONF_FILE}" || true
+chown_vmq vernemq:vernemq "${CONF_FILE}" || true
 wrote_passwd=0
 while IFS='=' read -r K V; do
   [[ "$K" == DOCKER_VERNEMQ_* ]] || continue

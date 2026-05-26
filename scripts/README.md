@@ -327,7 +327,7 @@ images/
 표준 `docker save` archive와 Podman-safe bundle archive를 모두 처리합니다.
 Podman이 Docker Hub 이미지를 `localhost/postgres:17`, `localhost/nginx:1.26-alpine`
 처럼 로드한 경우에는 compose가 참조하는 `docker.io/library/...` 이름으로 자동
-retag합니다.
+retag하고, 같은 이미지 ID를 가리키는 `localhost/...` alias는 제거합니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 
@@ -1148,7 +1148,9 @@ python3 -m json.tool license/license.json
 Error creating /vernemq/data/generated.configs: permission denied
 ```
 
-`broker/data` bind mount 소유권과 컨테이너 내부 `vernemq` 실행 UID가 맞지 않는 상태입니다.
+`broker/data` bind mount 소유권과 컨테이너 내부 실행 UID가 맞지 않는 상태입니다.
+rootless Podman 환경에서 이전 broker entrypoint가 컨테이너 내부 UID로 bind mount를 `chown`한
+경우, 호스트에서는 `166536` 같은 subordinate UID로 보일 수 있습니다.
 
 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
 
@@ -1165,6 +1167,14 @@ HOST_GID=1000
 
 값을 생략한 경우 브로커 entrypoint는 `/vernemq/data`의 현재 소유자를 기준으로 `vernemq`
 사용자 UID/GID를 맞춥니다.
+
+이미 `166536` 같은 UID로 바뀐 디렉터리는 서비스를 내린 뒤 한 번만 복구합니다.
+
+```bash
+docker compose down
+sudo chown -R "$(id -u):$(id -g)" git/data broker/data broker/logs
+./scripts/preflight-onprem.sh --compose-up
+```
 
 ---
 

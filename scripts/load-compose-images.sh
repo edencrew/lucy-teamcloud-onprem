@@ -26,7 +26,7 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 
 show_help() {
   cat <<'EOF'
@@ -436,6 +436,41 @@ ensure_local_image_available() {
   return 1
 }
 
+image_id() {
+  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
+}
+
+remove_image_alias_if_same_id() {
+  local canonical="$1"
+  local alias="$2"
+  local canonical_id alias_id
+
+  [ "$canonical" != "$alias" ] || return 0
+
+  canonical_id="$(image_id "$canonical")"
+  alias_id="$(image_id "$alias")"
+
+  if [ -n "$canonical_id" ] && [ "$canonical_id" = "$alias_id" ]; then
+    if docker image rmi "$alias" >/dev/null 2>&1; then
+      printf '  INFO Removed redundant image alias: %s\n' "$alias"
+    else
+      printf '  WARN Could not remove redundant image alias, continuing: %s\n' "$alias" >&2
+    fi
+  fi
+}
+
+cleanup_redundant_image_aliases() {
+  local img="$1"
+  local docker_hub_name=""
+
+  case "$img" in
+    docker.io/library/*)
+      docker_hub_name="${img#docker.io/library/}"
+      remove_image_alias_if_same_id "$img" "localhost/$docker_hub_name"
+      ;;
+  esac
+}
+
 verify_images_loaded() {
   local image_list_file="$1"
 
@@ -458,6 +493,7 @@ verify_images_loaded() {
     [ -n "$img" ] || continue
 
     if ensure_local_image_available "$img"; then
+      cleanup_redundant_image_aliases "$img"
       printf '  OK   %s\n' "$img"
     else
       printf '  MISS %s\n' "$img" >&2
