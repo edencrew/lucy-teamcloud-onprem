@@ -167,7 +167,7 @@ services:
     volumes:
       - ./secrets:/run/secrets:ro,z
       - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro,z
-      - ./nginx/certs/server.crt:/certs/server.crt:ro,z
+      - ./nginx/certs:/certs:ro,z
       - ./auth/logs:/app/logs:z
     entrypoint: ["/bin/sh", "/auth-entrypoint.sh"]
     networks:
@@ -217,7 +217,7 @@ services:
       - ./secrets:/run/secrets:ro,z
       - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro,z
       - ./license:/app/license:ro,z
-      - ./nginx/certs/server.crt:/certs/server.crt:ro,z
+      - ./nginx/certs:/certs:ro,z
       - ./tc/logs:/app/logs:z
     entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
     networks:

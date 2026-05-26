@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.7"
+SCRIPT_VERSION="1.2.8"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -1113,6 +1113,18 @@ validate_certificates() {
 
   external_url="$(get_env_value EXTERNAL_URL)"
   host="$(url_host "$external_url")"
+
+  if [ -d "$cert" ]; then
+    fail_msg "server.crt path is a directory, but must be a certificate file: nginx/certs/server.crt"
+    warn "Suggested fix: stop compose, then remove the directory: rm -rf $(shell_quote "$cert")"
+    return 0
+  fi
+
+  if [ -d "$key" ]; then
+    fail_msg "server.key path is a directory, but must be a private key file: nginx/certs/server.key"
+    warn "Suggested fix: stop compose, then remove the directory: rm -rf $(shell_quote "$key")"
+    return 0
+  fi
 
   if [ ! -f "$cert" ] && [ ! -f "$key" ]; then
     ok "No nginx certificate files found. init-secrets is expected to generate self-signed certs on first boot."

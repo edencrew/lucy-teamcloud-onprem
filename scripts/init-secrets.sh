@@ -17,6 +17,10 @@ if ! command -v openssl >/dev/null 2>&1; then
   apk add --no-cache openssl >/dev/null
 fi
 
+is_ipv4() {
+  printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
 # ──────────────────────────────────────────────
 # 1) self-signed 인증서 발급
 # ──────────────────────────────────────────────
@@ -29,15 +33,26 @@ else
     echo "[init-secrets] EXTERNAL_URL is empty; cannot generate cert." >&2
     exit 1
   fi
+
+  if is_ipv4 "$HOST"; then
+    SAN="IP:$HOST,DNS:localhost"
+  else
+    SAN="DNS:$HOST,DNS:localhost"
+  fi
+
   echo "[init-secrets] generating self-signed cert for $HOST ..."
+  echo "[init-secrets] subjectAltName=$SAN"
   mkdir -p "$CERT_DIR"
-  openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout "$CERT_DIR/server.key" \
-    -out "$CERT_DIR/server.crt" \
-    -days 3650 \
-    -subj "/CN=$HOST/O=Lucy TeamCloud/C=KR" \
-    -addext "subjectAltName=DNS:$HOST,DNS:localhost" \
-    >/dev/null 2>&1
+  if ! openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout "$CERT_DIR/server.key" \
+      -out "$CERT_DIR/server.crt" \
+      -days 3650 \
+      -subj "/CN=$HOST/O=Lucy TeamCloud/C=KR" \
+      -addext "subjectAltName=$SAN"; then
+    echo "[init-secrets] failed to generate certificate under $CERT_DIR." >&2
+    echo "[init-secrets] Check that $CERT_DIR/server.crt is not a directory and that the bind mount is writable." >&2
+    exit 1
+  fi
   chmod 644 "$CERT_DIR/server.crt"
   chmod 600 "$CERT_DIR/server.key"
 fi
