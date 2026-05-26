@@ -18,6 +18,7 @@ EXTERNAL_URL_CLEAN=$(echo "$EXTERNAL_URL" | sed -E 's#/+$##')
 EXTERNAL_HOST=$(echo "$EXTERNAL_URL_CLEAN" | sed -E 's#https?://([^/:]+).*#\1#')
 export GITEA__server__DOMAIN=$EXTERNAL_HOST
 export GITEA__server__ROOT_URL="${EXTERNAL_URL_CLEAN}/git/"
+export GITEA__server__HTTP_PORT=8080
 
 # app.ini 초기화
 # app.ini의 상위폴더가 data폴더로 이미 마운트되어 하위 app.ini는 마운트 불가
