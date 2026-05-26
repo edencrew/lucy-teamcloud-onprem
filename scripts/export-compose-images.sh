@@ -195,8 +195,8 @@ OFFLINE SERVER USAGE
     docker compose up -d --pull never
 
 NOTES
-  - This script reads images from:
-      docker compose config --images
+  - This script reads image and service metadata from the final merged
+    docker compose config YAML.
 
   - That means image versions are taken from the final merged compose config.
     If an override file changes an image tag, the override tag is used.
@@ -444,12 +444,12 @@ get_project_name() {
   printf '%s' "$name"
 }
 
-get_explicit_images() {
-  compose config --images 2>/dev/null | awk 'NF > 0' | sort -u
+get_images_from_service_meta() {
+  awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' "$SERVICE_META_FILE" | sort -u
 }
 
-get_services() {
-  compose config --services 2>/dev/null | awk 'NF > 0'
+get_services_from_service_meta() {
+  awk -F '\t' 'NF >= 1 && $1 != "" { print $1 }' "$SERVICE_META_FILE"
 }
 
 get_service_meta() {
@@ -491,6 +491,8 @@ get_service_meta() {
       line = $0
       sub(/^  /, "", line)
       sub(/:.*/, "", line)
+      gsub(/"/, "", line)
+      gsub(/\047/, "", line)
       svc = line
       img = ""
       build = 0
@@ -654,6 +656,7 @@ main() {
   log "Reading service metadata from merged compose config..."
   SERVICE_META_FILE="$OUTPUT_DIR/$OUTPUT_BASE.services.txt"
   get_service_meta > "$SERVICE_META_FILE"
+  [ -s "$SERVICE_META_FILE" ] || die "No services found in merged compose config."
 
   ALL_BUILD_SERVICES=()
   ALL_BUILD_IMAGES=()
@@ -700,22 +703,22 @@ main() {
     done
   fi
 
-  log "Reading image list from merged compose config..."
+  log "Reading image list from service metadata..."
   EXPLICIT_IMAGES=()
   while IFS= read -r img; do
     [ -n "$img" ] || continue
     EXPLICIT_IMAGES+=("$img")
-  done <<EOF_EXPLICIT_IMAGES
-$(get_explicit_images)
-EOF_EXPLICIT_IMAGES
+  done <<EOF_SERVICE_IMAGES
+$(get_images_from_service_meta)
+EOF_SERVICE_IMAGES
 
   if [ "${#EXPLICIT_IMAGES[@]}" -eq 0 ]; then
-    warn "No explicit image: entries found in compose config."
-  else
-    printf '%s\n' "${EXPLICIT_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.explicit-images.txt"
-    log "Explicit image list:"
-    printf '  %s\n' "${EXPLICIT_IMAGES[@]}"
+    die "No image entries found in service metadata."
   fi
+
+  printf '%s\n' "${EXPLICIT_IMAGES[@]}" > "$OUTPUT_DIR/$OUTPUT_BASE.explicit-images.txt"
+  log "Explicit image list:"
+  printf '  %s\n' "${EXPLICIT_IMAGES[@]}"
 
   BUILD_SERVICES=()
   BUILD_IMAGES=()
@@ -829,9 +832,9 @@ EOF_PULL_ERROR
     while IFS= read -r svc; do
       [ -n "$svc" ] || continue
       SERVICES+=("$svc")
-    done <<EOF_SERVICES
-$(get_services)
-EOF_SERVICES
+    done <<EOF_META_SERVICES
+$(get_services_from_service_meta)
+EOF_META_SERVICES
 
     local candidate
     for svc in "${SERVICES[@]}"; do

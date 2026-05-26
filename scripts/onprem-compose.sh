@@ -417,17 +417,90 @@ run_preflight() {
   PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
 }
 
+parse_compose_service_meta() {
+  awk '
+    function flush() {
+      if (svc != "") {
+        print svc "\t" img "\t" build
+        svc = ""
+        img = ""
+        build = 0
+      }
+    }
+
+    BEGIN {
+      in_services = 0
+      svc = ""
+      img = ""
+      build = 0
+    }
+
+    /^services:[[:space:]]*$/ {
+      in_services = 1
+      next
+    }
+
+    in_services && /^[^[:space:]]/ {
+      flush()
+      in_services = 0
+      exit
+    }
+
+    in_services && /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
+      flush()
+      line = $0
+      sub(/^  /, "", line)
+      sub(/:.*/, "", line)
+      gsub(/"/, "", line)
+      gsub(/\047/, "", line)
+      svc = line
+      img = ""
+      build = 0
+      next
+    }
+
+    in_services && svc != "" && /^    image:[[:space:]]*/ {
+      line = $0
+      sub(/^    image:[[:space:]]*/, "", line)
+      gsub(/"/, "", line)
+      gsub(/\047/, "", line)
+      img = line
+      next
+    }
+
+    in_services && svc != "" && /^    build:/ {
+      build = 1
+      next
+    }
+
+    END {
+      if (in_services) {
+        flush()
+      }
+    }
+  '
+}
+
+compose_service_meta() {
+  compose config 2>/dev/null | parse_compose_service_meta
+}
+
+compose_service_meta_with_override() {
+  local override_file="$1"
+  compose_with_extra_override "$override_file" config 2>/dev/null | parse_compose_service_meta
+}
+
 sorted_compose_images() {
-  compose config --images 2>/dev/null | awk 'NF > 0' | sort -u
+  compose_service_meta | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' | sort -u
 }
 
 sorted_compose_images_with_override() {
   local override_file="$1"
-  compose_with_extra_override "$override_file" config --images 2>/dev/null | awk 'NF > 0' | sort -u
+  compose_service_meta_with_override "$override_file" | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' | sort -u
 }
 
 sorted_compose_services() {
-  compose config --services 2>/dev/null | awk 'NF > 0' | sort -u
+  compose_service_meta | awk -F '\t' 'NF >= 1 && $1 != "" { print $1 }' | sort -u
 }
 
 sorted_image_file() {
