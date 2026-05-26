@@ -9,7 +9,7 @@ services:
   # ./secrets/secrets.env, ./nginx/certs/server.{crt,key} 가 이미 있으면
   # 각각 no-op (idempotent). 정식 인증서로 교체하면 그대로 보존됨.
   init-secrets:
-    image: docker.io/library/alpine:3.20
+    image: alpine:3.20
     restart: "no"
     environment:
       EXTERNAL_URL: ${EXTERNAL_URL}
@@ -20,7 +20,7 @@ services:
     command: ["/bin/sh", "/init-secrets.sh"]
 
   gw:
-    image: docker.io/library/nginx:1.26-alpine
+    image: nginx:1.26-alpine
     restart: unless-stopped
     networks:
       - internal-network
@@ -74,7 +74,7 @@ services:
     entrypoint: ["/bin/sh", "/gitea-entrypoint.sh"]
 
   db:
-    image: docker.io/library/postgres:17
+    image: postgres:17
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]

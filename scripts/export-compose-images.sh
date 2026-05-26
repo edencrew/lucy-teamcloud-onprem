@@ -22,27 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.5.5"
-TEMP_PATHS=""
-
-register_temp_path() {
-  local path="$1"
-  TEMP_PATHS="${TEMP_PATHS}${TEMP_PATHS:+
-}$path"
-}
-
-cleanup_temp_paths() {
-  local path
-
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    rm -rf "$path"
-  done <<EOF_CLEANUP_TEMP_PATHS
-$TEMP_PATHS
-EOF_CLEANUP_TEMP_PATHS
-}
-
-trap cleanup_temp_paths EXIT
+SCRIPT_VERSION="1.6.0"
 
 show_help() {
   cat <<'EOF'
@@ -242,9 +222,8 @@ NOTES
 
     Or run this script on an amd64 Linux machine.
 
-  - This script writes an image-by-image bundle archive. The bundle manifest
-    records the exact image names from the merged Compose config. Load it with
-    load-compose-images.sh, not raw docker load.
+  - This script writes a standard docker-save archive. The saved archive must
+    contain the exact image names from the merged Compose config.
 
 EOF
 }
@@ -354,68 +333,6 @@ supports_docker_save_platform() {
 
 supports_docker_build_platform() {
   docker build --help 2>/dev/null | grep -q -- '--platform'
-}
-
-extract_archive_to_dir() {
-  local archive="$1"
-  local dest="$2"
-
-  tar -xf "$archive" -C "$dest"
-}
-
-write_archive_from_dir() {
-  local source_dir="$1"
-  local archive="$2"
-
-  (
-    cd "$source_dir"
-    tar -cf "$archive" *
-  )
-}
-
-rewrite_manifest_repo_tags() {
-  local manifest="$1"
-  local image="$2"
-  local tmp_file="$manifest.tmp.$$"
-
-  awk -v image="$image" '
-    BEGIN {
-      replacement = "\"RepoTags\":[\"" image "\"]"
-      changed = 0
-    }
-    {
-      if (sub(/"RepoTags":\[[^]]*\]/, replacement)) {
-        changed = 1
-      }
-      print
-    }
-    END {
-      if (changed == 0) {
-        exit 42
-      }
-    }
-  ' "$manifest" > "$tmp_file" || die "Could not rewrite RepoTags in image archive manifest: $manifest"
-
-  mv "$tmp_file" "$manifest"
-}
-
-rewrite_archive_repo_tags() {
-  local archive="$1"
-  local image="$2"
-  local tmp_dir extract_dir
-
-  tmp_dir="$(mktemp -d)"
-  register_temp_path "$tmp_dir"
-  extract_dir="$tmp_dir/archive"
-  mkdir -p "$extract_dir"
-
-  extract_archive_to_dir "$archive" "$extract_dir"
-  [ -f "$extract_dir/manifest.json" ] || die "Image archive manifest not found: $archive"
-
-  rewrite_manifest_repo_tags "$extract_dir/manifest.json" "$image"
-  write_archive_from_dir "$extract_dir" "$archive"
-
-  rm -rf "$tmp_dir"
 }
 
 detect_base_compose_file() {
@@ -643,55 +560,61 @@ image_exists() {
   docker image inspect "$image" >/dev/null 2>&1
 }
 
-check_image_save() {
-  local image="$1"
-  local tmp_file="$2"
-
-  if supports_docker_save_platform; then
-    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$image" -o "$tmp_file"
-  else
-    warn "This Docker version does not support 'docker save --platform'. Falling back to plain docker save."
-    docker save "$image" -o "$tmp_file"
-  fi
-}
-
-save_images_as_bundle() {
-  local output_path="$1"
-  shift
-
-  local tmp_dir bundle_dir manifest index image rel_path
-  tmp_dir="$(mktemp -d)"
-  register_temp_path "$tmp_dir"
-  bundle_dir="$tmp_dir/lucy-image-bundle-v1"
-  manifest="$bundle_dir/manifest.tsv"
-
-  mkdir -p "$bundle_dir/images"
-  : > "$manifest"
-
-  index=1
-  for image in "$@"; do
-    rel_path="$(printf 'images/image-%06d.tar' "$index")"
-    printf '%s\t%s\t%s\n' "$index" "$image" "$rel_path" >> "$manifest"
-    log "Saving bundle image: $image"
-    check_image_save "$image" "$bundle_dir/$rel_path"
-    rewrite_archive_repo_tags "$bundle_dir/$rel_path" "$image"
-    index=$((index + 1))
-  done
-
-  (
-    cd "$tmp_dir"
-    tar -cf - lucy-image-bundle-v1
-  ) | gzip > "$output_path"
-
-  rm -rf "$tmp_dir"
-}
-
 save_images_to_archive() {
   local output_path="$1"
   shift
 
-  log "Saving image-by-image bundle with exact compose image names."
-  save_images_as_bundle "$output_path" "$@"
+  if supports_docker_save_platform; then
+    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$@" | gzip > "$output_path"
+  else
+    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
+    docker save "$@" | gzip > "$output_path"
+  fi
+}
+
+archive_repo_tags() {
+  local archive="$1"
+
+  gzip -cd "$archive" | tar -xOf - manifest.json 2>/dev/null | awk '
+    {
+      line = $0
+      while (match(line, /"RepoTags":\[[^]]*\]/)) {
+        tags = substr(line, RSTART, RLENGTH)
+        line = substr(line, RSTART + RLENGTH)
+        while (match(tags, /"[^"]+"/)) {
+          value = substr(tags, RSTART + 1, RLENGTH - 2)
+          if (value != "RepoTags") {
+            print value
+          }
+          tags = substr(tags, RSTART + RLENGTH)
+        }
+      }
+    }
+  '
+}
+
+validate_saved_archive_image_names() {
+  local archive="$1"
+  local image_list_file="$2"
+  local tmp_dir expected_file actual_file
+
+  tmp_dir="$(mktemp -d)"
+  expected_file="$tmp_dir/expected.txt"
+  actual_file="$tmp_dir/actual.txt"
+
+  sed '/^[[:space:]]*$/d' "$image_list_file" | sort -u > "$expected_file"
+  archive_repo_tags "$archive" | sort -u > "$actual_file" || true
+
+  if ! cmp -s "$expected_file" "$actual_file"; then
+    printf '\nExpected image names from compose manifest:\n' >&2
+    sed 's/^/  /' "$expected_file" >&2
+    printf '\nImage names stored in docker-save archive:\n' >&2
+    sed 's/^/  /' "$actual_file" >&2
+    rm -rf "$tmp_dir"
+    die "Saved archive image names do not match the Compose image list."
+  fi
+
+  rm -rf "$tmp_dir"
 }
 
 sha256_file() {
@@ -753,6 +676,7 @@ main() {
   require_cmd sort
   require_cmd tar
   require_cmd gzip
+  require_cmd cmp
 
   docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
   docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
@@ -1002,21 +926,11 @@ EOF_PULL_ERROR
     fi
   done
 
-  log "Testing docker save image by image..."
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  register_temp_path "$tmp_dir"
-
-  for img in "${SAVE_IMAGES[@]}"; do
-    log "Testing save: $img"
-    check_image_save "$img" "$tmp_dir/test.tar"
-    rm -f "$tmp_dir/test.tar"
-  done
-
   rm -f "$OUTPUT_PATH" "$OUTPUT_PATH.sha256"
 
   log "Saving all images to: $OUTPUT_PATH"
   save_images_to_archive "$OUTPUT_PATH" "${SAVE_IMAGES[@]}"
+  validate_saved_archive_image_names "$OUTPUT_PATH" "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt"
 
   sha256_file "$OUTPUT_PATH"
 

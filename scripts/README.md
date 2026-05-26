@@ -125,7 +125,7 @@ sha256 체크섬 생성
 이미지 tar.gz 파일 확인
 sha256 체크섬 검증
 gzip 무결성 검사
-표준 docker save archive 또는 이미지별 bundle 로드
+표준 docker save archive 로드
 로드된 이미지 확인
 ```
 
@@ -269,10 +269,9 @@ images/
 `*.services.txt`는 전체 Compose stack 기준으로 생성됩니다. 폐쇄망 서버에는
 선택하지 않은 기존 이미지가 이미 있어야 합니다.
 
-`*.tar.gz`는 여러 이미지를 한 번에 `docker save`한 archive가 아니라 이미지별
-save 파일을 묶은 bundle 형식으로 생성됩니다. bundle manifest에는 최종 Compose
-config에서 읽은 이미지명이 그대로 기록됩니다. 폐쇄망 서버에서는 반드시
-`load-compose-images.sh`로 로드합니다.
+`*.tar.gz`는 최종 Compose config에서 읽은 이미지명을 그대로 `docker save`한
+표준 archive입니다. archive 내부 이미지명이 `*.archive-images.txt`와 다르면
+export 단계에서 중단합니다.
 
 ```bash
 ./scripts/export-compose-images.sh --update-service tc-fe
@@ -324,9 +323,9 @@ images/
 ```
 
 이 스크립트는 `images/` 디렉토리 안의 이미지 파일을 자동으로 찾아 검증 후 로드합니다.
-표준 `docker save` archive와 이미지별 bundle archive를 모두 처리합니다.
-이미지 이름은 archive manifest에 기록된 Compose 기준 이름 그대로 검증합니다.
-archive 내부 이름이 `*.archive-images.txt`와 다르면 이미지를 로드하기 전에 중단합니다.
+표준 `docker save` archive만 처리합니다. 이미지 이름은 archive manifest에
+기록된 Compose 기준 이름 그대로 검증합니다. archive 내부 이름이
+`*.archive-images.txt`와 다르면 이미지를 로드하기 전에 중단합니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 
