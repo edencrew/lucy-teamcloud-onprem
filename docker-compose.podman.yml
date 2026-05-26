@@ -13,18 +13,12 @@ services:
       - ./nginx/nginx.podman.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z
     depends_on: !override
-      db:
-        condition: service_healthy
-      git:
-        condition: service_started
-      auth-be:
-        condition: service_healthy
-      auth-fe:
-        condition: service_started
-      tc-be:
-        condition: service_healthy
-      tc-fe:
-        condition: service_started
+      - db
+      - git
+      - auth-be
+      - auth-fe
+      - tc-be
+      - tc-fe
 
   git:
     environment:
@@ -35,8 +29,7 @@ services:
       - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro,z
       - ./secrets:/run/secrets:ro,z
     depends_on: !override
-      db:
-        condition: service_healthy
+      - db
 
   db:
     volumes: !override
@@ -57,8 +50,7 @@ services:
 
   auth-be:
     depends_on: !override
-      db:
-        condition: service_healthy
+      - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
     environment:
@@ -71,8 +63,7 @@ services:
 
   tc-be:
     depends_on: !override
-      db:
-        condition: service_healthy
+      - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
     environment:
