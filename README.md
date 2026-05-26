@@ -290,8 +290,10 @@ docker compose up -d
 | `./license/license.json` | 라이센스 파일 (고객 제공) | 권장 |
 | `./nginx/certs/` | SSL 인증서 | 권장 |
 
-Linux rootless Podman 환경에서도 `postgres/data/`, `git/data/`는 compose 실행 사용자
-소유로 유지되어야 합니다. preflight가 이 소유권을 검사하고 가능한 경우 자동 복구합니다.
+Linux rootless Podman 환경에서는 `postgres/data/`, `git/data/`, `broker/data/`,
+`broker/logs/` 내부 파일이 `166536` 같은 subordinate UID로 보일 수 있습니다.
+서비스 데이터 디렉터리는 root 소유만 아니면 정상으로 간주하며, `secrets`,
+`nginx/certs`, `license`는 compose 실행 사용자 소유여야 합니다.
 
 > **`secrets/secrets.env` 분실 시 영향**: 첫 부팅 시 자동 재생성되지만 기존에 발급된 모든 사용자 토큰/세션이 무효화되어 전원 재로그인이 필요하고, Gitea의 2FA 백업코드 등 일부 암호화된 데이터는 복호화가 불가능해집니다. 백업을 반드시 보관하세요.
 

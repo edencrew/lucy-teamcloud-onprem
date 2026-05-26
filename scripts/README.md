@@ -602,9 +602,11 @@ DB_PASSWORD="P@ss!word"
 
 ## 5.7 Linux 권한 설정
 
-Linux 서버, 특히 rootless Podman 환경에서는 다음 값을 compose 실행 계정의 UID/GID로
-설정해야 합니다. 이 값이 실제 실행 계정과 다르면 `postgres/data`, `git/data`가 host 사용자
-소유로 유지되지 않습니다.
+Linux 서버에서는 다음 값을 compose 실행 계정의 UID/GID로 설정합니다.
+rootless Podman 환경에서 서비스 데이터(`postgres/data`, `git/data`, `broker/data`,
+`broker/logs`)는 컨테이너 내부 UID가 기록되어 `166536` 같은 subordinate UID로 보일 수
+있으며, preflight는 root 소유만 아니면 정상으로 간주합니다. `secrets`, `nginx/certs`,
+`license`는 compose 실행 사용자 소유여야 합니다.
 
 ```env
 HOST_UID=1000
@@ -1155,8 +1157,9 @@ Error creating /vernemq/data/generated.configs: permission denied
 ```
 
 `broker/data` bind mount 소유권과 컨테이너 내부 실행 UID가 맞지 않는 상태입니다.
-rootless Podman 환경에서 이전 컨테이너가 내부 UID로 bind mount를 `chown`한 경우,
-호스트에서는 `166536` 같은 subordinate UID로 보일 수 있습니다.
+rootless Podman 환경에서 컨테이너 내부 UID로 bind mount가 기록되면 호스트에서는
+`166536` 같은 subordinate UID로 보일 수 있으며, 이는 서비스 데이터 디렉터리에서는
+허용됩니다.
 
 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
 
@@ -1171,16 +1174,17 @@ HOST_UID=1000
 HOST_GID=1000
 ```
 
-값을 생략한 경우 브로커 entrypoint는 `/vernemq/data`의 현재 소유자를 기준으로 `vernemq`
-사용자 UID/GID를 맞춥니다.
+`HOST_UID`, `HOST_GID`는 preflight의 host-owned 디렉터리 검사와 Gitea `USER_UID`,
+`USER_GID` 설정에 사용됩니다. 브로커/DB/Gitea 서비스 데이터는 rootless Podman에서
+subordinate UID로 남을 수 있습니다.
 
-이미 `166536` 같은 UID로 바뀐 디렉터리는 서비스를 내린 뒤 한 번만 복구합니다.
-preflight는 rootless Podman에서 가능한 경우 `podman unshare chown`으로 자동 복구를
-시도합니다. 수동 복구가 필요하면 다음 명령을 사용합니다.
+서비스 데이터가 아닌 `secrets`, `nginx/certs`, `license` 등이 root 또는 잘못된 사용자
+소유로 바뀐 경우에는 서비스를 내린 뒤 복구합니다. 수동 복구가 필요하면 다음 명령을
+사용합니다.
 
 ```bash
 docker compose down
-sudo chown -R "$(id -u):$(id -g)" postgres/data git/data broker/data broker/logs
+sudo chown -R "$(id -u):$(id -g)" secrets nginx/certs license
 ./scripts/preflight-onprem.sh --compose-up
 ```
 

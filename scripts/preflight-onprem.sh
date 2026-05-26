@@ -290,23 +290,6 @@ warn_if_subuid_owner_mismatch() {
   fi
 }
 
-repair_rootless_podman_host_ownership() {
-  local path="$1"
-  local current_uid current_gid
-
-  [ "$(detect_container_runtime)" = "podman" ] || return 1
-  podman_is_rootless || return 1
-  command -v podman >/dev/null 2>&1 || return 1
-  command -v id >/dev/null 2>&1 || return 1
-
-  current_uid="$(id -u)"
-  current_gid="$(id -g)"
-  [ "$RUNTIME_UID" = "$current_uid" ] || return 1
-  [ "$RUNTIME_GID" = "$current_gid" ] || return 1
-
-  podman unshare chown -R 0:0 "$path" 2>/dev/null
-}
-
 resolve_runtime_owner() {
   local env_uid env_gid current_uid current_gid
   local invalid_owner
@@ -516,27 +499,11 @@ prepare_host_owned_directory() {
   log_allowed_root_owned_generated_paths "$full" "$RUNTIME_UID" "$RUNTIME_GID"
   mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
   if [ -n "$mismatch" ]; then
-    info_msg "Preparing ownership: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
-    if chown -R "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
-      ok "Directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
-    elif repair_rootless_podman_host_ownership "$full"; then
-      mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
-      if [ -z "$mismatch" ]; then
-        ok "Directory ownership prepared through podman unshare: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
-      else
-        fail_msg "Directory ownership mismatch and automatic podman unshare repair incomplete: $rel"
-        warn "First mismatched path: $mismatch"
-        warn_if_subuid_owner_mismatch "$mismatch"
-        warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
-        return 0
-      fi
-    else
-      fail_msg "Directory ownership mismatch and automatic chown failed: $rel"
-      warn "First mismatched path: $mismatch"
-      warn_if_subuid_owner_mismatch "$mismatch"
-      warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
-      return 0
-    fi
+    fail_msg "Directory ownership mismatch: $rel"
+    warn "First mismatched path: $mismatch"
+    warn_if_subuid_owner_mismatch "$mismatch"
+    warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+    return 0
   fi
 
   if [ -w "$full" ]; then
@@ -545,6 +512,26 @@ prepare_host_owned_directory() {
     fail_msg "Directory exists but is not writable: $rel"
     warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
   fi
+}
+
+prepare_service_data_directory() {
+  local rel="$1"
+  local full="$ROOT_DIR/$rel"
+  local mismatch
+
+  ensure_directory_exists "$rel" || return 0
+
+  info_msg "Checking service data directory ownership: $rel"
+  mismatch="$(find "$full" -user 0 -group 0 -print -quit 2>/dev/null || true)"
+  if [ -n "$mismatch" ]; then
+    fail_msg "Service data directory contains root-owned path: $rel"
+    warn "First root-owned path: $mismatch"
+    warn "Rootless Podman may write service data as a subordinate UID such as 166536; that is allowed."
+    warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+    return 0
+  fi
+
+  ok "Service data directory exists and is not root-owned: $rel"
 }
 
 array_contains() {
@@ -1993,8 +1980,13 @@ prepare_and_validate_directories() {
 
   resolve_runtime_owner || return 0
 
-  local host_owned_dirs="postgres/data git/data broker/data broker/logs secrets nginx/certs license"
+  local service_data_dirs="postgres/data git/data broker/data broker/logs"
+  local host_owned_dirs="secrets nginx/certs license"
   local d
+
+  for d in $service_data_dirs; do
+    prepare_service_data_directory "$d"
+  done
 
   for d in $host_owned_dirs; do
     prepare_host_owned_directory "$d"
