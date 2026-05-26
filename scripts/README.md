@@ -325,6 +325,9 @@ images/
 
 이 스크립트는 `images/` 디렉토리 안의 이미지 파일을 자동으로 찾아 검증 후 로드합니다.
 표준 `docker save` archive와 Podman-safe bundle archive를 모두 처리합니다.
+Podman이 Docker Hub 이미지를 `localhost/postgres:17`, `localhost/nginx:1.26-alpine`
+처럼 로드한 경우에는 compose가 참조하는 `docker.io/library/...` 이름으로 자동
+retag합니다.
 
 특정 파일을 직접 지정할 수도 있습니다.
 

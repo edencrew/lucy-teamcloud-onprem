@@ -26,7 +26,7 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 
 show_help() {
   cat <<'EOF'
@@ -400,6 +400,7 @@ load_image_bundle() {
 ensure_local_image_available() {
   local img="$1"
   local fallback=""
+  local docker_hub_name=""
 
   if docker image inspect "$img" >/dev/null 2>&1; then
     return 0
@@ -408,17 +409,29 @@ ensure_local_image_available() {
   case "$img" in
     localhost/*)
       fallback="${img#localhost/}"
+      if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
+        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
+        printf '  INFO Retagged local image for Podman short-name safety: %s -> %s\n' "$fallback" "$img"
+        return 0
+      fi
       ;;
-    *)
-      return 1
+    docker.io/library/*)
+      docker_hub_name="${img#docker.io/library/}"
+      fallback="localhost/$docker_hub_name"
+      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
+        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
+        printf '  INFO Retagged Docker Hub image loaded by Podman: %s -> %s\n' "$fallback" "$img"
+        return 0
+      fi
+
+      fallback="$docker_hub_name"
+      if [ -n "$docker_hub_name" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
+        docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
+        printf '  INFO Retagged Docker Hub short-name image: %s -> %s\n' "$fallback" "$img"
+        return 0
+      fi
       ;;
   esac
-
-  if [ -n "$fallback" ] && docker image inspect "$fallback" >/dev/null 2>&1; then
-    docker image tag "$fallback" "$img" >/dev/null 2>&1 || return 1
-    printf '  INFO Retagged local image for Podman short-name safety: %s -> %s\n' "$fallback" "$img"
-    return 0
-  fi
 
   return 1
 }
