@@ -602,7 +602,9 @@ DB_PASSWORD="P@ss!word"
 
 ## 5.7 Linux 권한 설정
 
-Linux 서버에서는 필요에 따라 다음 값을 설정할 수 있습니다.
+Linux 서버, 특히 rootless Podman 환경에서는 다음 값을 compose 실행 계정의 UID/GID로
+설정해야 합니다. 이 값이 실제 실행 계정과 다르면 `postgres/data`, `git/data`가 host 사용자
+소유로 유지되지 않습니다.
 
 ```env
 HOST_UID=1000
@@ -626,15 +628,12 @@ id -g
 단, 다음 자동 생성 산출물은 `root:root`여도 허용합니다.
 
 ```text
-git/data/gitea/.admin-created
-git/data/ssh/
 secrets/secrets.env
 nginx/certs/server.crt
 nginx/certs/server.key
 ```
 
-`git/data/ssh/`는 디렉터리와 그 하위 항목을 포함합니다. 이 목록 밖의 root-owned
-파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
+이 목록 밖의 root-owned 파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
 
 Podman을 SELinux enforcing 환경에서 실행하는 경우, bind mount 파일이 컨테이너 내부에서
 `Permission denied`로 보일 수 있습니다. 기본 compose 파일은 shared SELinux label
@@ -1156,10 +1155,8 @@ Error creating /vernemq/data/generated.configs: permission denied
 ```
 
 `broker/data` bind mount 소유권과 컨테이너 내부 실행 UID가 맞지 않는 상태입니다.
-rootless Podman 환경에서 이전 broker entrypoint가 컨테이너 내부 UID로 bind mount를 `chown`한
-경우, 호스트에서는 `166536` 같은 subordinate UID로 보일 수 있습니다.
-`git/data`도 Gitea가 관리하는 서비스 데이터라 rootless Podman 환경에서는 subordinate UID로
-보일 수 있으며, preflight는 이를 host-owned 런타임 디렉터리처럼 되돌리지 않습니다.
+rootless Podman 환경에서 이전 컨테이너가 내부 UID로 bind mount를 `chown`한 경우,
+호스트에서는 `166536` 같은 subordinate UID로 보일 수 있습니다.
 
 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
 
@@ -1178,10 +1175,12 @@ HOST_GID=1000
 사용자 UID/GID를 맞춥니다.
 
 이미 `166536` 같은 UID로 바뀐 디렉터리는 서비스를 내린 뒤 한 번만 복구합니다.
+preflight는 rootless Podman에서 가능한 경우 `podman unshare chown`으로 자동 복구를
+시도합니다. 수동 복구가 필요하면 다음 명령을 사용합니다.
 
 ```bash
 docker compose down
-sudo chown -R "$(id -u):$(id -g)" broker/data broker/logs
+sudo chown -R "$(id -u):$(id -g)" postgres/data git/data broker/data broker/logs
 ./scripts/preflight-onprem.sh --compose-up
 ```
 

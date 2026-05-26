@@ -53,6 +53,9 @@ services:
 
   git:
     image: docker.gitea.com/gitea:1.25.3
+    # Gitea runs as USER_UID/USER_GID below. In rootless Podman, keep-id maps
+    # that container UID/GID back to the compose user so git/data stays host-owned.
+    userns_mode: keep-id
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -80,6 +83,9 @@ services:
 
   db:
     image: postgres:17
+    # rootless Podman maps the image's postgres user (999:999) to the host
+    # compose user, so bind-mounted database files remain host-user owned.
+    userns_mode: keep-id:uid=999,gid=999
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]

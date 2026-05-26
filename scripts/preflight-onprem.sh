@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.16"
+SCRIPT_VERSION="1.2.17"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -33,8 +33,8 @@ MIN_RAM_MB="2048"
 MIN_DISK_MB="10240"
 
 IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
-ROOT_OWNED_GENERATED_FILES="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
-ROOT_OWNED_GENERATED_DIRS="git/data/ssh"
+ROOT_OWNED_GENERATED_FILES="secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
+ROOT_OWNED_GENERATED_DIRS=""
 
 show_help() {
   cat <<'EOF'
@@ -287,8 +287,24 @@ warn_if_subuid_owner_mismatch() {
 
   if is_numeric_id "$uid" && [ "$uid" -ge 65536 ]; then
     warn "This looks like a rootless Podman subordinate UID written from inside a container."
-    warn "Stop services before repairing ownership, then run the suggested sudo chown command below."
   fi
+}
+
+repair_rootless_podman_host_ownership() {
+  local path="$1"
+  local current_uid current_gid
+
+  [ "$(detect_container_runtime)" = "podman" ] || return 1
+  podman_is_rootless || return 1
+  command -v podman >/dev/null 2>&1 || return 1
+  command -v id >/dev/null 2>&1 || return 1
+
+  current_uid="$(id -u)"
+  current_gid="$(id -g)"
+  [ "$RUNTIME_UID" = "$current_uid" ] || return 1
+  [ "$RUNTIME_GID" = "$current_gid" ] || return 1
+
+  podman unshare chown -R 0:0 "$path" 2>/dev/null
 }
 
 resolve_runtime_owner() {
@@ -327,6 +343,24 @@ resolve_runtime_owner() {
   if [ -z "$RUNTIME_UID" ] || [ -z "$RUNTIME_GID" ]; then
     fail_msg "Could not resolve runtime UID/GID. Set HOST_UID and HOST_GID in .env."
     return 1
+  fi
+
+  if [ "$(detect_container_runtime)" = "podman" ] && podman_is_rootless; then
+    if [ -z "$env_uid" ] || [ -z "$env_gid" ]; then
+      fail_msg "HOST_UID and HOST_GID must be set in .env for rootless Podman bind mount ownership."
+      warn "Suggested values: HOST_UID=${current_uid:-<id -u>} and HOST_GID=${current_gid:-<id -g>}"
+      return 1
+    fi
+
+    if [ -n "$current_uid" ] && [ "$env_uid" != "$current_uid" ]; then
+      fail_msg "HOST_UID must match the compose user UID for rootless Podman. HOST_UID=$env_uid, current UID=$current_uid"
+      return 1
+    fi
+
+    if [ -n "$current_gid" ] && [ "$env_gid" != "$current_gid" ]; then
+      fail_msg "HOST_GID must match the compose user GID for rootless Podman. HOST_GID=$env_gid, current GID=$current_gid"
+      return 1
+    fi
   fi
 
   if [ "$RUNTIME_UID" = "0" ]; then
@@ -471,28 +505,6 @@ EOF_OWNER_MISMATCH
   return 0
 }
 
-first_root_owned_path() {
-  local path="$1"
-  local first
-
-  first="$(find "$path" -user 0 -print -quit 2>/dev/null || true)"
-  printf '%s' "$first"
-}
-
-print_root_owned_sample() {
-  local path="$1"
-
-  find "$path" -user 0 -print 2>/dev/null | sed -n '1,5p'
-}
-
-directory_is_empty() {
-  local path="$1"
-  local first
-
-  first="$(find "$path" -mindepth 1 -print -quit 2>/dev/null || printf '%s' "__find_failed__")"
-  [ -z "$first" ]
-}
-
 prepare_host_owned_directory() {
   local rel="$1"
   local full="$ROOT_DIR/$rel"
@@ -507,11 +519,22 @@ prepare_host_owned_directory() {
     info_msg "Preparing ownership: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
     if chown -R "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
       ok "Directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
+    elif repair_rootless_podman_host_ownership "$full"; then
+      mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
+      if [ -z "$mismatch" ]; then
+        ok "Directory ownership prepared through podman unshare: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
+      else
+        fail_msg "Directory ownership mismatch and automatic podman unshare repair incomplete: $rel"
+        warn "First mismatched path: $mismatch"
+        warn_if_subuid_owner_mismatch "$mismatch"
+        warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+        return 0
+      fi
     else
       fail_msg "Directory ownership mismatch and automatic chown failed: $rel"
       warn "First mismatched path: $mismatch"
       warn_if_subuid_owner_mismatch "$mismatch"
-      warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
+      warn "Suggested fix: stop services, then run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
       return 0
     fi
   fi
@@ -521,34 +544,6 @@ prepare_host_owned_directory() {
   else
     fail_msg "Directory exists but is not writable: $rel"
     warn "Suggested fix: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
-  fi
-}
-
-prepare_service_owned_directory() {
-  local rel="$1"
-  local full="$ROOT_DIR/$rel"
-  local root_owned
-
-  ensure_directory_exists "$rel" || return 0
-
-  info_msg "Checking service data directory ownership: $rel"
-  root_owned="$(first_root_owned_path "$full")"
-  if [ -n "$root_owned" ]; then
-    if directory_is_empty "$full"; then
-      if chown "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
-        ok "Empty service data directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
-      else
-        fail_msg "Empty service data directory is root-owned and automatic chown failed: $rel"
-        warn "Suggested fix: sudo chown ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
-      fi
-    else
-      fail_msg "Service data directory contains root-owned entries: $rel"
-      warn "Preflight does not recursively chown existing service data."
-      warn "Root-owned sample:"
-      print_root_owned_sample "$full" >&2
-    fi
-  else
-    ok "Service data directory exists and is not root-owned: $rel"
   fi
 }
 
@@ -1998,15 +1993,13 @@ prepare_and_validate_directories() {
 
   resolve_runtime_owner || return 0
 
-  local host_owned_dirs="broker/data broker/logs secrets nginx/certs license"
+  local host_owned_dirs="postgres/data git/data broker/data broker/logs secrets nginx/certs license"
   local d
 
   for d in $host_owned_dirs; do
     prepare_host_owned_directory "$d"
   done
 
-  prepare_service_owned_directory "postgres/data"
-  prepare_service_owned_directory "git/data"
 }
 
 hash_command() {

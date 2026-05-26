@@ -20,6 +20,10 @@ export GITEA__server__DOMAIN=$EXTERNAL_HOST
 export GITEA__server__ROOT_URL="${EXTERNAL_URL_CLEAN}/git/"
 export GITEA__server__HTTP_PORT=8080
 
+# On-prem은 nginx/tc-be 경유 HTTP Git만 노출한다. Gitea 이미지의 내장 sshd는
+# /data/ssh를 root 소유로 생성하므로 rootless Podman bind mount 소유권을 깨뜨린다.
+rm -rf /etc/s6/openssh
+
 # app.ini 초기화
 # app.ini의 상위폴더가 data폴더로 이미 마운트되어 하위 app.ini는 마운트 불가
 # 따라서 /app.ini.default 를 별도로 마운트하고, 최초 실행 시 복사하는 방식 사용.
@@ -45,7 +49,7 @@ if [ ! -f /data/gitea/.admin-created ]; then
       --must-change-password=false 2>/dev/null; then
 
       # 생성완료 표시
-      touch /data/gitea/.admin-created
+      su-exec git touch /data/gitea/.admin-created
       echo "Admin user created successfully"
 
     else

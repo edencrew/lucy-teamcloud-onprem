@@ -60,7 +60,7 @@ TZ=Asia/Seoul
 | `HTTP_PORT`, `HTTPS_PORT` | 외부 접속용 host port. 1024 미만 포트는 rootless Podman에서 OS 설정에 따라 막힐 수 있으며 preflight가 검증 |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요 (예: `DB_PASSWORD="P@ss!word"`) |
-| Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
+| Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정. rootless Podman에서는 필수 |
 
 ### 1.4 계정 정보 변경 불가 안내
 
@@ -289,6 +289,9 @@ docker compose up -d
 | `./secrets/secrets.env` | 인스턴스별 자동 생성 시크릿 (JWT 키, OIDC, Gitea 내부) | **필수** |
 | `./license/license.json` | 라이센스 파일 (고객 제공) | 권장 |
 | `./nginx/certs/` | SSL 인증서 | 권장 |
+
+Linux rootless Podman 환경에서도 `postgres/data/`, `git/data/`는 compose 실행 사용자
+소유로 유지되어야 합니다. preflight가 이 소유권을 검사하고 가능한 경우 자동 복구합니다.
 
 > **`secrets/secrets.env` 분실 시 영향**: 첫 부팅 시 자동 재생성되지만 기존에 발급된 모든 사용자 토큰/세션이 무효화되어 전원 재로그인이 필요하고, Gitea의 2FA 백업코드 등 일부 암호화된 데이터는 복호화가 불가능해집니다. 백업을 반드시 보관하세요.
 
