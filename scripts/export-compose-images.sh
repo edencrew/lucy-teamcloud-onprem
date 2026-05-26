@@ -22,7 +22,27 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.5.3"
+SCRIPT_VERSION="1.5.5"
+TEMP_PATHS=""
+
+register_temp_path() {
+  local path="$1"
+  TEMP_PATHS="${TEMP_PATHS}${TEMP_PATHS:+
+}$path"
+}
+
+cleanup_temp_paths() {
+  local path
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rm -rf "$path"
+  done <<EOF_CLEANUP_TEMP_PATHS
+$TEMP_PATHS
+EOF_CLEANUP_TEMP_PATHS
+}
+
+trap cleanup_temp_paths EXIT
 
 show_help() {
   cat <<'EOF'
@@ -222,9 +242,9 @@ NOTES
 
     Or run this script on an amd64 Linux machine.
 
-  - When the Docker CLI is backed by Podman, this script writes an
-    image-by-image bundle archive to avoid Podman's multi-image docker-archive
-    tag corruption. Load it with load-compose-images.sh, not raw docker load.
+  - This script writes an image-by-image bundle archive. The bundle manifest
+    records the exact image names from the merged Compose config. Load it with
+    load-compose-images.sh, not raw docker load.
 
 EOF
 }
@@ -332,12 +352,70 @@ supports_docker_save_platform() {
   docker save --help 2>/dev/null | grep -q -- '--platform'
 }
 
-supports_docker_save_format() {
-  docker save --help 2>/dev/null | grep -q -- '--format'
-}
-
 supports_docker_build_platform() {
   docker build --help 2>/dev/null | grep -q -- '--platform'
+}
+
+extract_archive_to_dir() {
+  local archive="$1"
+  local dest="$2"
+
+  tar -xf "$archive" -C "$dest"
+}
+
+write_archive_from_dir() {
+  local source_dir="$1"
+  local archive="$2"
+
+  (
+    cd "$source_dir"
+    tar -cf "$archive" *
+  )
+}
+
+rewrite_manifest_repo_tags() {
+  local manifest="$1"
+  local image="$2"
+  local tmp_file="$manifest.tmp.$$"
+
+  awk -v image="$image" '
+    BEGIN {
+      replacement = "\"RepoTags\":[\"" image "\"]"
+      changed = 0
+    }
+    {
+      if (sub(/"RepoTags":\[[^]]*\]/, replacement)) {
+        changed = 1
+      }
+      print
+    }
+    END {
+      if (changed == 0) {
+        exit 42
+      }
+    }
+  ' "$manifest" > "$tmp_file" || die "Could not rewrite RepoTags in image archive manifest: $manifest"
+
+  mv "$tmp_file" "$manifest"
+}
+
+rewrite_archive_repo_tags() {
+  local archive="$1"
+  local image="$2"
+  local tmp_dir extract_dir
+
+  tmp_dir="$(mktemp -d)"
+  register_temp_path "$tmp_dir"
+  extract_dir="$tmp_dir/archive"
+  mkdir -p "$extract_dir"
+
+  extract_archive_to_dir "$archive" "$extract_dir"
+  [ -f "$extract_dir/manifest.json" ] || die "Image archive manifest not found: $archive"
+
+  rewrite_manifest_repo_tags "$extract_dir/manifest.json" "$image"
+  write_archive_from_dir "$extract_dir" "$archive"
+
+  rm -rf "$tmp_dir"
 }
 
 detect_base_compose_file() {
@@ -569,9 +647,7 @@ check_image_save() {
   local image="$1"
   local tmp_file="$2"
 
-  if [ "$CONTAINER_RUNTIME" = "podman" ] && supports_docker_save_format; then
-    docker save --format oci-archive "$image" -o "$tmp_file"
-  elif supports_docker_save_platform; then
+  if supports_docker_save_platform; then
     docker save --platform "$TARGET_PLATFORM_RESOLVED" "$image" -o "$tmp_file"
   else
     warn "This Docker version does not support 'docker save --platform'. Falling back to plain docker save."
@@ -579,12 +655,13 @@ check_image_save() {
   fi
 }
 
-save_images_as_podman_bundle() {
+save_images_as_bundle() {
   local output_path="$1"
   shift
 
   local tmp_dir bundle_dir manifest index image rel_path
   tmp_dir="$(mktemp -d)"
+  register_temp_path "$tmp_dir"
   bundle_dir="$tmp_dir/lucy-image-bundle-v1"
   manifest="$bundle_dir/manifest.tsv"
 
@@ -597,6 +674,7 @@ save_images_as_podman_bundle() {
     printf '%s\t%s\t%s\n' "$index" "$image" "$rel_path" >> "$manifest"
     log "Saving bundle image: $image"
     check_image_save "$image" "$bundle_dir/$rel_path"
+    rewrite_archive_repo_tags "$bundle_dir/$rel_path" "$image"
     index=$((index + 1))
   done
 
@@ -612,15 +690,8 @@ save_images_to_archive() {
   local output_path="$1"
   shift
 
-  if [ "$CONTAINER_RUNTIME" = "podman" ]; then
-    log "Podman runtime detected. Saving image-by-image bundle to avoid multi-image docker-archive tag corruption."
-    save_images_as_podman_bundle "$output_path" "$@"
-  elif supports_docker_save_platform; then
-    docker save --platform "$TARGET_PLATFORM_RESOLVED" "$@" | gzip > "$output_path"
-  else
-    warn "This Docker version does not support 'docker save --platform'. Saving without platform filter."
-    docker save "$@" | gzip > "$output_path"
-  fi
+  log "Saving image-by-image bundle with exact compose image names."
+  save_images_as_bundle "$output_path" "$@"
 }
 
 sha256_file() {
@@ -897,29 +968,6 @@ EOF_PULL_ERROR
       fi
     done
 
-    SERVICES=()
-    while IFS= read -r svc; do
-      [ -n "$svc" ] || continue
-      SERVICES+=("$svc")
-    done <<EOF_META_SERVICES
-$(get_services_from_service_meta)
-EOF_META_SERVICES
-
-    local candidate
-    for svc in "${SERVICES[@]}"; do
-      for candidate in \
-        "${project_name}-${svc}" \
-        "${project_name}-${svc}:latest" \
-        "${project_name}_${svc}" \
-        "${project_name}_${svc}:latest"
-      do
-        if image_exists "$candidate"; then
-          if ! array_contains "$candidate" "${SAVE_IMAGES[@]}"; then
-            SAVE_IMAGES+=("$candidate")
-          fi
-        fi
-      done
-    done
   fi
 
   if [ "${#SAVE_IMAGES[@]}" -eq 0 ]; then
@@ -957,7 +1005,7 @@ EOF_META_SERVICES
   log "Testing docker save image by image..."
   local tmp_dir
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  register_temp_path "$tmp_dir"
 
   for img in "${SAVE_IMAGES[@]}"; do
     log "Testing save: $img"

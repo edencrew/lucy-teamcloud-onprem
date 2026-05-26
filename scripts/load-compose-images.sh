@@ -15,7 +15,7 @@ set -Eeo pipefail
 #   2. Finds the image archive automatically, or uses the provided archive path.
 #   3. Verifies SHA256 checksum if .sha256 file exists.
 #   4. Verifies gzip integrity for .tar.gz / .tgz archives.
-#   5. Loads either a standard docker-save archive or a Podman-safe bundle.
+#   5. Loads either a standard docker-save archive or an image-by-image bundle.
 #   6. Verifies expected images from *.archive-images.txt / *.images.txt if available.
 #
 # Compatibility:
@@ -26,7 +26,27 @@ set -Eeo pipefail
 #   Bash 3 with empty arrays can fail unexpectedly. This script avoids nounset
 #   for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.7"
+TEMP_PATHS=""
+
+register_temp_path() {
+  local path="$1"
+  TEMP_PATHS="${TEMP_PATHS}${TEMP_PATHS:+
+}$path"
+}
+
+cleanup_temp_paths() {
+  local path
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rm -rf "$path"
+  done <<EOF_CLEANUP_TEMP_PATHS
+$TEMP_PATHS
+EOF_CLEANUP_TEMP_PATHS
+}
+
+trap cleanup_temp_paths EXIT
 
 show_help() {
   cat <<'EOF'
@@ -40,7 +60,7 @@ DESCRIPTION
 
   It supports both:
     - standard docker save archives
-    - Podman-safe image-by-image bundle archives from export-compose-images.sh
+    - image-by-image bundle archives from export-compose-images.sh
 
 RECOMMENDED LOCATION
   <project-root>/scripts/load-compose-images.sh
@@ -332,17 +352,6 @@ verify_gzip() {
   esac
 }
 
-docker_load_archive() {
-  local archive="$1"
-
-  if archive_is_image_bundle "$archive"; then
-    load_image_bundle "$archive"
-  else
-    log "Loading Docker images from archive..."
-    docker load -i "$archive"
-  fi
-}
-
 archive_is_image_bundle() {
   local archive="$1"
 
@@ -364,19 +373,113 @@ extract_archive_to_dir() {
   fi
 }
 
+archive_repo_tags() {
+  local archive="$1"
+
+  {
+    if is_gzip_archive "$archive"; then
+      gzip -cd "$archive" | tar -xOf - manifest.json 2>/dev/null
+    else
+      tar -xOf "$archive" manifest.json 2>/dev/null
+    fi
+  } | awk '
+    {
+      line = $0
+      while (match(line, /"RepoTags":\[[^]]*\]/)) {
+        tags = substr(line, RSTART, RLENGTH)
+        line = substr(line, RSTART + RLENGTH)
+        while (match(tags, /"[^"]+"/)) {
+          value = substr(tags, RSTART + 1, RLENGTH - 2)
+          if (value != "RepoTags") {
+            print value
+          }
+          tags = substr(tags, RSTART + RLENGTH)
+        }
+      }
+    }
+  '
+}
+
+validate_archive_image_names() {
+  local archive="$1"
+  local image_list_file="$2"
+  local tmp_dir expected_file actual_file
+
+  [ -f "$image_list_file" ] || return 0
+
+  tmp_dir="$(mktemp -d)"
+  register_temp_path "$tmp_dir"
+  expected_file="$tmp_dir/expected.txt"
+  actual_file="$tmp_dir/actual.txt"
+
+  sed '/^[[:space:]]*$/d' "$image_list_file" | sort -u > "$expected_file"
+  archive_repo_tags "$archive" | sort -u > "$actual_file"
+
+  if ! cmp -s "$expected_file" "$actual_file"; then
+    printf '\nExpected image names from manifest:\n' >&2
+    sed 's/^/  /' "$expected_file" >&2
+    printf '\nImage names stored in archive:\n' >&2
+    sed 's/^/  /' "$actual_file" >&2
+    rm -rf "$tmp_dir"
+    die "Archive image names do not match the expected image list. Re-export with the current export-compose-images.sh."
+  fi
+
+  rm -rf "$tmp_dir"
+}
+
+validate_bundle_image_names() {
+  local manifest="$1"
+  local image_list_file="$2"
+  local tmp_dir expected_file actual_file
+
+  [ -f "$image_list_file" ] || return 0
+
+  tmp_dir="$(mktemp -d)"
+  register_temp_path "$tmp_dir"
+  expected_file="$tmp_dir/expected.txt"
+  actual_file="$tmp_dir/actual.txt"
+
+  sed '/^[[:space:]]*$/d' "$image_list_file" | sort -u > "$expected_file"
+  awk -F "$(printf '\t')" 'NF >= 2 && $2 != "" { print $2 }' "$manifest" | sort -u > "$actual_file"
+
+  if ! cmp -s "$expected_file" "$actual_file"; then
+    printf '\nExpected image names from manifest:\n' >&2
+    sed 's/^/  /' "$expected_file" >&2
+    printf '\nImage names stored in bundle:\n' >&2
+    sed 's/^/  /' "$actual_file" >&2
+    rm -rf "$tmp_dir"
+    die "Bundle image names do not match the expected image list. Re-export with the current export-compose-images.sh."
+  fi
+
+  rm -rf "$tmp_dir"
+}
+
+load_standard_archive() {
+  local archive="$1"
+  local image_list_file="$2"
+
+  validate_archive_image_names "$archive" "$image_list_file"
+
+  log "Loading Docker images from archive..."
+  docker load -i "$archive"
+}
+
 load_image_bundle() {
   local archive="$1"
-  local tmp_dir bundle_dir manifest index image rel_path loaded
+  local image_list_file="$2"
+  local tmp_dir bundle_dir manifest index image rel_path loaded image_list
 
   require_cmd tar
 
   tmp_dir="$(mktemp -d)"
+  register_temp_path "$tmp_dir"
   bundle_dir="$tmp_dir/lucy-image-bundle-v1"
   manifest="$bundle_dir/manifest.tsv"
 
   log "Loading Docker images from image-by-image bundle..."
   extract_archive_to_dir "$archive" "$tmp_dir"
   [ -f "$manifest" ] || die "Bundle manifest not found after extraction: $manifest"
+  validate_bundle_image_names "$manifest" "$image_list_file"
 
   loaded=0
   while IFS="$(printf '\t')" read -r index image rel_path; do
@@ -386,7 +489,9 @@ load_image_bundle() {
     [ -f "$bundle_dir/$rel_path" ] || die "Bundle image archive not found: $rel_path"
 
     log "Loading bundled image: $image"
-    docker load -i "$bundle_dir/$rel_path"
+    image_list="$tmp_dir/expected-image-$index.txt"
+    printf '%s\n' "$image" > "$image_list"
+    load_standard_archive "$bundle_dir/$rel_path" "$image_list"
     loaded=$((loaded + 1))
   done < "$manifest"
 
@@ -394,6 +499,17 @@ load_image_bundle() {
 
   if [ "$loaded" -eq 0 ]; then
     die "Bundle manifest contained no images."
+  fi
+}
+
+docker_load_archive() {
+  local archive="$1"
+  local image_list_file="$2"
+
+  if archive_is_image_bundle "$archive"; then
+    load_image_bundle "$archive" "$image_list_file"
+  else
+    load_standard_archive "$archive" "$image_list_file"
   fi
 }
 
@@ -405,86 +521,6 @@ ensure_local_image_available() {
   fi
 
   return 1
-}
-
-image_id() {
-  docker image inspect "$1" --format '{{.Id}}' 2>/dev/null || true
-}
-
-remove_image_tag() {
-  local tag="$1"
-
-  if command -v podman >/dev/null 2>&1; then
-    if podman untag "$tag" >/dev/null 2>&1; then
-      return 0
-    fi
-
-    if podman image untag "$tag" >/dev/null 2>&1; then
-      return 0
-    fi
-  fi
-
-  if docker image rmi "$tag" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  docker rmi "$tag" >/dev/null 2>&1
-}
-
-normalize_loaded_image_name() {
-  local expected="$1"
-  local docker_hub_name candidate expected_id candidate_id
-
-  if docker image inspect "$expected" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  case "$expected" in
-    docker.io/library/*)
-      docker_hub_name="${expected#docker.io/library/}"
-      for candidate in "localhost/$docker_hub_name" "$docker_hub_name"; do
-        if ! docker image inspect "$candidate" >/dev/null 2>&1; then
-          continue
-        fi
-
-        if docker image tag "$candidate" "$expected" >/dev/null 2>&1; then
-          printf '  INFO Normalized Docker Hub image name after load: %s -> %s\n' "$candidate" "$expected"
-
-          expected_id="$(image_id "$expected")"
-          candidate_id="$(image_id "$candidate")"
-          if [ -n "$expected_id" ] && [ "$expected_id" = "$candidate_id" ]; then
-            if remove_image_tag "$candidate"; then
-              printf '  INFO Removed non-canonical loaded image tag: %s\n' "$candidate"
-            else
-              die "Could not remove non-canonical loaded image tag after restoring $expected: $candidate"
-            fi
-          fi
-
-          return 0
-        fi
-      done
-      ;;
-  esac
-
-  return 1
-}
-
-restore_loaded_image_names() {
-  local image_list_file="$1"
-  local img=""
-
-  if [ ! -f "$image_list_file" ]; then
-    return 0
-  fi
-
-  while IFS= read -r img; do
-    [ -n "$img" ] || continue
-
-    # Standard docker-save archives can store Docker Hub library images as
-    # short names like nginx:tag. Podman loads those short names as localhost/*.
-    # Restore the canonical names recorded by export-compose-images.sh.
-    normalize_loaded_image_name "$img" || true
-  done < "$image_list_file"
 }
 
 verify_images_loaded() {
@@ -629,7 +665,11 @@ main() {
   parse_args "$@"
 
   require_cmd docker
+  require_cmd awk
+  require_cmd sed
+  require_cmd sort
   require_cmd tar
+  require_cmd cmp
   docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
 
   local sdir
@@ -670,8 +710,7 @@ main() {
 
   verify_checksum "$archive" "$checksum_file"
   verify_gzip "$archive"
-  docker_load_archive "$archive"
-  restore_loaded_image_names "$image_list_file"
+  docker_load_archive "$archive" "$image_list_file"
   verify_images_loaded "$image_list_file"
   verify_image_id_sanity "$image_list_file"
 

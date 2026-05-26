@@ -23,7 +23,7 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.13"
+SCRIPT_VERSION="1.2.14"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
@@ -1291,6 +1291,12 @@ get_compose_images() {
   get_compose_service_meta | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' | sort -u
 }
 
+get_compose_image_for_service() {
+  local service="$1"
+
+  get_compose_service_meta | awk -F '\t' -v service="$service" '$1 == service { print $2; exit }'
+}
+
 ensure_local_image_available() {
   local img="$1"
 
@@ -1369,6 +1375,36 @@ validate_image_metadata_contains() {
   fi
 }
 
+validate_service_image_identity() {
+  local service="$1"
+  local expected="$2"
+  local desc="$3"
+  local image
+
+  image="$(get_compose_image_for_service "$service")"
+  if [ -z "$image" ]; then
+    fail_msg "Service image not found in compose config: $service"
+    return 0
+  fi
+
+  validate_image_identity "$image" "$expected" "$desc"
+}
+
+validate_service_image_metadata_contains() {
+  local service="$1"
+  local expected="$2"
+  local desc="$3"
+  local image
+
+  image="$(get_compose_image_for_service "$service")"
+  if [ -z "$image" ]; then
+    fail_msg "Service image not found in compose config: $service"
+    return 0
+  fi
+
+  validate_image_metadata_contains "$image" "$expected" "$desc"
+}
+
 validate_offline_image_identities() {
   if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
     return 0
@@ -1376,18 +1412,18 @@ validate_offline_image_identities() {
 
   log "Checking offline build image identity..."
 
-  validate_image_identity \
-    "localhost/lucy-teamcloud-onprem-broker:offline" \
+  validate_service_image_identity \
+    "broker" \
     "/vernemq/bin/vernemq start" \
     "the locally built VerneMQ broker image"
 
-  validate_image_identity \
-    "localhost/lucy-teamcloud-onprem-init-secrets:offline" \
+  validate_service_image_identity \
+    "init-secrets" \
     "/usr/local/bin/docker-entrypoint.sh" \
     "the locally built init-secrets image"
 
-  validate_image_metadata_contains \
-    "docker.io/library/postgres:17" \
+  validate_service_image_metadata_contains \
+    "db" \
     "PG_VERSION" \
     "the official PostgreSQL image"
 }

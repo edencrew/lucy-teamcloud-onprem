@@ -6,7 +6,7 @@ set -Eeo pipefail
 # Operational wrapper for Lucy TeamCloud On-Premise Docker Compose commands.
 # It preserves data by default and delegates readiness checks to preflight.
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 IMAGE_OVERRIDE_REL=".install-state/compose-image-tags.override.yml"
 
 cleanup_tmp_files() {
@@ -544,14 +544,14 @@ sorted_image_file() {
 }
 
 show_image_mismatch() {
-  local archive_sorted="$1"
+  local expected_sorted="$1"
   local compose_sorted="$2"
 
   if command -v diff >/dev/null 2>&1; then
-    diff -u "$archive_sorted" "$compose_sorted" >&2 || true
+    diff -u "$expected_sorted" "$compose_sorted" >&2 || true
   else
-    warn "Archive image list:"
-    sed 's/^/  /' "$archive_sorted" >&2
+    warn "Expected image list:"
+    sed 's/^/  /' "$expected_sorted" >&2
     warn "Compose image list:"
     sed 's/^/  /' "$compose_sorted" >&2
   fi
@@ -607,9 +607,9 @@ validate_manifest_services_against_compose() {
   ' "$compose_services_file" "$normalized_services"
 }
 
-validate_manifest_images_against_archive() {
+validate_service_images_against_image_manifest() {
   local normalized_services="$1"
-  local archive_sorted="$2"
+  local expected_images_sorted="$2"
 
   awk -F '\t' '
     NR == FNR {
@@ -621,7 +621,7 @@ validate_manifest_images_against_archive() {
       bad = 1
     }
     END { exit bad }
-  ' "$archive_sorted" "$normalized_services"
+  ' "$expected_images_sorted" "$normalized_services"
 }
 
 write_image_override_from_manifest() {
@@ -645,10 +645,10 @@ write_image_override_from_manifest() {
   } > "$output_file"
 }
 
-verify_archive_image_tags_match_generated_override() {
+verify_image_manifest_matches_generated_override() {
   local archive="$1"
   local base_name image_list_file service_list_file tmp_dir
-  local normalized_services archive_sorted compose_sorted compose_services_file override_file
+  local normalized_services expected_images_sorted compose_sorted compose_services_file override_file
 
   archive="$(resolve_path_from_root "$archive")"
   [ -f "$archive" ] || die "Archive file not found: $archive"
@@ -662,12 +662,12 @@ verify_archive_image_tags_match_generated_override() {
   tmp_dir="$(mktemp -d)"
   TMP_IMAGE_OVERRIDE_DIR="$tmp_dir"
   normalized_services="$tmp_dir/services.normalized"
-  archive_sorted="$tmp_dir/archive.images"
+  expected_images_sorted="$tmp_dir/expected.images"
   compose_sorted="$tmp_dir/compose.images"
   compose_services_file="$tmp_dir/compose.services"
   override_file="$tmp_dir/compose-image-tags.override.yml"
 
-  sorted_image_file "$image_list_file" > "$archive_sorted"
+  sorted_image_file "$image_list_file" > "$expected_images_sorted"
   normalize_service_manifest "$service_list_file" "$normalized_services"
 
   if [ ! -s "$normalized_services" ]; then
@@ -675,7 +675,7 @@ verify_archive_image_tags_match_generated_override() {
   fi
 
   validate_manifest_services_against_compose "$normalized_services" "$compose_services_file"
-  validate_manifest_images_against_archive "$normalized_services" "$archive_sorted"
+  validate_service_images_against_image_manifest "$normalized_services" "$expected_images_sorted"
   write_image_override_from_manifest "$normalized_services" "$override_file"
   sorted_compose_images_with_override "$override_file" > "$compose_sorted"
 
@@ -683,20 +683,20 @@ verify_archive_image_tags_match_generated_override() {
     die "No images found in Docker Compose config with generated image override."
   fi
 
-  if cmp -s "$archive_sorted" "$compose_sorted"; then
+  if cmp -s "$expected_images_sorted" "$compose_sorted"; then
     VERIFIED_ARCHIVE="$archive"
     VERIFIED_IMAGE_OVERRIDE_FILE="$override_file"
     VERIFIED_IMAGE_LIST_FILE="$image_list_file"
     VERIFIED_SERVICE_LIST_FILE="$service_list_file"
-    log "Archive image tags match compose config with generated image override."
+    log "Image manifest matches compose config with generated image override."
     return 0
   fi
 
-  warn "Archive image tags do not match compose config with generated image override."
-  warn "Archive image list: $image_list_file"
+  warn "Image manifest does not match compose config with generated image override."
+  warn "Expected image list: $image_list_file"
   warn "Service metadata file: $service_list_file"
-  show_image_mismatch "$archive_sorted" "$compose_sorted"
-  die "Refusing image replacement because image tags differ."
+  show_image_mismatch "$expected_images_sorted" "$compose_sorted"
+  die "Refusing image replacement because image manifests differ."
 }
 
 persist_verified_image_override() {
@@ -774,7 +774,7 @@ cmd_replace_images() {
   VERIFIED_IMAGE_OVERRIDE_FILE=""
   VERIFIED_IMAGE_LIST_FILE=""
   VERIFIED_SERVICE_LIST_FILE=""
-  verify_archive_image_tags_match_generated_override "$archive"
+  verify_image_manifest_matches_generated_override "$archive"
   require_docker_daemon
   load_archive "$VERIFIED_ARCHIVE"
   persist_verified_image_override "$VERIFIED_IMAGE_OVERRIDE_FILE"
