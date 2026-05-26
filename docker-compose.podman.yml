@@ -12,7 +12,9 @@ services:
     volumes: !override
       - ./nginx/nginx.podman.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z
-    depends_on: !override
+    # Keep this untagged: podman-compose 1.5.0 crashes on !override here.
+    # Podman scripts strip base depends_on blocks before merging this file.
+    depends_on:
       - db
       - git
       - auth-be
@@ -28,7 +30,7 @@ services:
       - ./git/app.ini:/app.ini.default:ro,z
       - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro,z
       - ./secrets:/run/secrets:ro,z
-    depends_on: !override
+    depends_on:
       - db
 
   db:
@@ -49,7 +51,7 @@ services:
       - ./broker/docker-entrypoint.sh:/usr/local/bin/docker-entrypoint.sh:ro,z
 
   auth-be:
-    depends_on: !override
+    depends_on:
       - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
@@ -62,7 +64,7 @@ services:
       - ./auth/logs:/app/logs:z
 
   tc-be:
-    depends_on: !override
+    depends_on:
       - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]

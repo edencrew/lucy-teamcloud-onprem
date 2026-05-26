@@ -13,6 +13,9 @@ cleanup_tmp_files() {
   if [ -n "${TMP_IMAGE_OVERRIDE_DIR:-}" ] && [ -d "$TMP_IMAGE_OVERRIDE_DIR" ]; then
     rm -rf "$TMP_IMAGE_OVERRIDE_DIR"
   fi
+  if [ -n "${TMP_PODMAN_COMPOSE_FILE:-}" ] && [ -f "$TMP_PODMAN_COMPOSE_FILE" ]; then
+    rm -f "$TMP_PODMAN_COMPOSE_FILE"
+  fi
 }
 
 trap cleanup_tmp_files EXIT
@@ -366,6 +369,54 @@ append_installed_image_override() {
   if [ -f "$IMAGE_OVERRIDE_FILE" ]; then
     add_compose_file_unique "$IMAGE_OVERRIDE_FILE"
   fi
+}
+
+create_podman_base_compose() {
+  local source_file="$1"
+  local tmp_file
+
+  tmp_file="$(mktemp "$ROOT_DIR/.docker-compose.podman-runtime.yml.XXXXXX")" || die "Could not create temporary compose file."
+  TMP_PODMAN_COMPOSE_FILE="$tmp_file"
+
+  # podman-compose 1.5.0 cannot handle service_completed_successfully reliably.
+  # Podman scripts run init-secrets and wait for db explicitly before stack up.
+  awk '
+    function indent(line, pos) {
+      pos = match(line, /[^ ]/)
+      return pos ? pos - 1 : length(line)
+    }
+    {
+      current_indent = indent($0)
+      if (skip_depends_on) {
+        if ($0 ~ /^[[:space:]]*$/) next
+        if (current_indent > depends_on_indent) next
+        skip_depends_on = 0
+      }
+      if ($0 ~ /^    depends_on:[[:space:]]*($|#)/) {
+        skip_depends_on = 1
+        depends_on_indent = 4
+        next
+      }
+      print
+    }
+  ' "$source_file" > "$tmp_file" || die "Could not create Podman-compatible compose base."
+
+  printf '%s' "$tmp_file"
+}
+
+prepare_podman_compose_files() {
+  [ "${#COMPOSE_FILE_LIST[@]}" -gt 0 ] || return 0
+
+  local base_file base_name podman_base
+  base_file="${COMPOSE_FILE_LIST[0]}"
+  base_name="$(basename "$base_file")"
+
+  case "$base_name" in
+    docker-compose.yaml|docker-compose.yml|compose.yaml|compose.yml)
+      podman_base="$(create_podman_base_compose "$base_file")"
+      COMPOSE_FILE_LIST[0]="$podman_base"
+      ;;
+  esac
 }
 
 build_compose_args() {
@@ -837,6 +888,7 @@ init_context() {
   init_root_context
 
   detect_compose_files
+  prepare_podman_compose_files
   append_installed_image_override
   build_compose_args
 }

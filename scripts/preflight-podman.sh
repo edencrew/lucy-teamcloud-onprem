@@ -35,6 +35,14 @@ IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_
 ROOT_OWNED_GENERATED_FILES="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
 ROOT_OWNED_GENERATED_DIRS="git/data/ssh"
 
+cleanup_tmp_files() {
+  if [ -n "${TMP_PODMAN_COMPOSE_FILE:-}" ] && [ -f "$TMP_PODMAN_COMPOSE_FILE" ]; then
+    rm -f "$TMP_PODMAN_COMPOSE_FILE"
+  fi
+}
+
+trap cleanup_tmp_files EXIT
+
 show_help() {
   cat <<'EOF'
 preflight-podman.sh
@@ -633,6 +641,55 @@ EOF_COMPOSE_FILES
 $(split_colon_list_to_lines "$COMPOSE_OVERRIDE_FILES")
 EOF_OVERRIDE_FILES
   fi
+}
+
+create_podman_base_compose() {
+  local source_file="$1"
+  local tmp_file
+
+  tmp_file="$(mktemp "$ROOT_DIR/.docker-compose.podman-runtime.yml.XXXXXX")" || die "Could not create temporary compose file."
+  TMP_PODMAN_COMPOSE_FILE="$tmp_file"
+
+  # podman-compose 1.5.0 cannot handle service_completed_successfully reliably.
+  # Podman scripts run init-secrets and wait for db explicitly before stack up.
+  awk '
+    function indent(line, pos) {
+      pos = match(line, /[^ ]/)
+      return pos ? pos - 1 : length(line)
+    }
+    {
+      current_indent = indent($0)
+      if (skip_depends_on) {
+        if ($0 ~ /^[[:space:]]*$/) next
+        if (current_indent > depends_on_indent) next
+        skip_depends_on = 0
+      }
+      if ($0 ~ /^    depends_on:[[:space:]]*($|#)/) {
+        skip_depends_on = 1
+        depends_on_indent = 4
+        next
+      }
+      print
+    }
+  ' "$source_file" > "$tmp_file" || die "Could not create Podman-compatible compose base."
+
+  printf '%s' "$tmp_file"
+}
+
+prepare_podman_compose_files() {
+  [ "${#COMPOSE_FILE_LIST[@]}" -gt 0 ] || return 0
+
+  local base_file base_name podman_base
+  base_file="${COMPOSE_FILE_LIST[0]}"
+  base_name="$(basename "$base_file")"
+
+  case "$base_name" in
+    docker-compose.yaml|docker-compose.yml|compose.yaml|compose.yml)
+      podman_base="$(create_podman_base_compose "$base_file")"
+      COMPOSE_FILE_LIST[0]="$podman_base"
+      PODMAN_SANITIZED_BASE=1
+      ;;
+  esac
 }
 
 build_compose_args() {
@@ -1801,10 +1858,15 @@ main() {
   cd "$ROOT_DIR"
 
   detect_compose_files
+  ORIGINAL_COMPOSE_FILE_LIST=("${COMPOSE_FILE_LIST[@]}")
+  prepare_podman_compose_files
   build_compose_args
 
   log "Project root: $ROOT_DIR"
-  log "Compose files, in merge order:$(join_by_space_quoted "${COMPOSE_FILE_LIST[@]}")"
+  log "Compose files, in merge order:$(join_by_space_quoted "${ORIGINAL_COMPOSE_FILE_LIST[@]}")"
+  if [ "${PODMAN_SANITIZED_BASE:-0}" = "1" ]; then
+    info_msg "Using Podman-compatible temporary base compose for runtime checks"
+  fi
 
   validate_docker_versions
   validate_resources
