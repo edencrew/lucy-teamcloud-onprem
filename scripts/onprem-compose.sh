@@ -6,7 +6,7 @@ set -Eeo pipefail
 # Operational wrapper for Lucy TeamCloud On-Premise Docker Compose commands.
 # It preserves data by default and delegates readiness checks to preflight.
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 IMAGE_OVERRIDE_REL=".install-state/compose-image-tags.override.yml"
 
 cleanup_tmp_files() {
@@ -41,7 +41,8 @@ COMMANDS
 
   up [SERVICE...]
       Run preflight, then:
-        docker compose up -d --pull never --no-build [SERVICE...]
+        Docker Compose provider: docker compose up -d --pull never --no-build [SERVICE...]
+        podman-compose provider: docker compose up -d --no-build [SERVICE...]
 
   down
       Stop and remove compose containers while preserving bind mount data and
@@ -53,8 +54,9 @@ COMMANDS
         docker compose restart [SERVICE...]
 
   recreate [SERVICE...]
-      Run preflight, then force-recreate containers without pulling/building:
-        docker compose up -d --pull never --no-build --force-recreate [SERVICE...]
+      Run preflight, then force-recreate containers:
+        Docker Compose provider: docker compose up -d --pull never --no-build --force-recreate [SERVICE...]
+        podman-compose provider: docker compose up -d --no-build --force-recreate [SERVICE...]
 
   restart-stack
       Run docker compose down, then preflight, then compose up.
@@ -373,6 +375,39 @@ compose_with_extra_override() {
   local override_file="$1"
   shift
   docker compose "${COMPOSE_ARGS[@]}" -f "$override_file" "$@"
+}
+
+detect_compose_provider() {
+  local raw
+  raw="$(docker compose version 2>&1 || true)"
+
+  if printf '%s\n' "$raw" | grep -Eiq 'podman-compose|podman version'; then
+    printf '%s' "podman-compose"
+  else
+    printf '%s' "docker-compose"
+  fi
+}
+
+compose_provider_is_podman() {
+  [ "$(detect_compose_provider)" = "podman-compose" ]
+}
+
+compose_up_offline() {
+  if compose_provider_is_podman; then
+    log "podman-compose provider detected. Using podman-compatible start command: docker compose up -d --no-build"
+    compose up -d --no-build "$@"
+  else
+    compose up -d --pull never --no-build "$@"
+  fi
+}
+
+compose_recreate_offline() {
+  if compose_provider_is_podman; then
+    log "podman-compose provider detected. Using podman-compatible recreate command: docker compose up -d --no-build --force-recreate"
+    compose up -d --no-build --force-recreate "$@"
+  else
+    compose up -d --pull never --no-build --force-recreate "$@"
+  fi
 }
 
 archive_basename_without_extensions() {
@@ -700,7 +735,7 @@ cmd_check() {
 cmd_up() {
   run_preflight
   log "Starting services..."
-  compose up -d --pull never --no-build "$@"
+  compose_up_offline "$@"
 }
 
 cmd_down() {
@@ -717,7 +752,7 @@ cmd_restart() {
 cmd_recreate() {
   run_preflight
   log "Recreating services..."
-  compose up -d --pull never --no-build --force-recreate "$@"
+  compose_recreate_offline "$@"
 }
 
 cmd_restart_stack() {
@@ -725,7 +760,7 @@ cmd_restart_stack() {
   compose down
   run_preflight
   log "Starting stack..."
-  compose up -d --pull never --no-build
+  compose_up_offline
 }
 
 cmd_replace_images() {
@@ -745,7 +780,7 @@ cmd_replace_images() {
   persist_verified_image_override "$VERIFIED_IMAGE_OVERRIDE_FILE"
   run_preflight
   log "Recreating services with loaded images..."
-  compose up -d --pull never --no-build --force-recreate "$@"
+  compose_recreate_offline "$@"
 }
 
 cmd_ps() {

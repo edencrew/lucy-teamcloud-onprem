@@ -4,7 +4,7 @@
 
 - Docker 20.10 이상 + Docker Compose v2.20 이상
 - 또는 Podman 5.0 이상 + podman-compose 1.5 이상
-- 최소 4GB RAM, 10GB 디스크 공간
+- 최소 2GB RAM, 10GB 디스크 공간
 
 ## 1. 환경 설정
 

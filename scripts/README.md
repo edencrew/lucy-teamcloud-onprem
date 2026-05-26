@@ -212,7 +212,7 @@ nginx/certs/server.key 자동 생성
 ```text
 Docker 20.10 이상 + Docker Compose v2.20 이상
 또는 Podman 5.0 이상 + podman-compose 1.5 이상
-최소 4GB RAM
+최소 2GB RAM
 최소 10GB 디스크 여유 공간
 ```
 
@@ -354,6 +354,17 @@ docker compose \
   -f docker-compose.yml \
   -f docker-compose.offline.yml \
   up -d --pull never --no-build
+```
+
+Podman/podman-compose 환경에서는 Docker Compose v2의 `--pull never --no-build`
+옵션 호환성이 다르므로 다음처럼 실행합니다. 이미지는 preflight의 local image check가
+먼저 검증합니다.
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.offline.yml \
+  up -d --no-build
 ```
 
 또는 검증 후 바로 실행하려면 다음 명령을 사용합니다.
@@ -722,6 +733,15 @@ docker compose \
   up -d --pull never --no-build
 ```
 
+Podman/podman-compose 환경:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.offline.yml \
+  up -d --no-build
+```
+
 ---
 
 # 9. 서비스 실행
@@ -753,7 +773,7 @@ docker compose \
 
 ## 9.2 왜 `--pull never --no-build`를 사용하나요?
 
-폐쇄망 서버에서는 외부 registry에 접근할 수 없습니다.
+Docker Compose 환경의 폐쇄망 서버에서는 외부 registry에 접근할 수 없습니다.
 
 따라서 실행 시 Docker가 이미지를 pull하거나 broker를 다시 build하지 않도록 해야 합니다.
 
@@ -770,6 +790,10 @@ docker compose \
 로컬 build 방지
 
 이미지는 이미 `load-compose-images.sh`를 통해 로드되어 있어야 합니다.
+
+Podman/podman-compose 환경에서는 이 옵션 조합을 그대로 넘기지 않고 `up -d --no-build`를
+사용합니다. 대신 preflight가 compose image 목록과 로컬 이미지 존재 여부를 먼저
+검증하므로, 이미지 누락 상태에서는 실행 단계로 넘어가지 않습니다.
 
 ---
 
@@ -901,6 +925,15 @@ docker compose \
   -f docker-compose.yml \
   -f docker-compose.offline.yml \
   up -d --pull never --no-build
+```
+
+Podman/podman-compose 환경:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.offline.yml \
+  up -d --no-build
 ```
 
 ---

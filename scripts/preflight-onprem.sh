@@ -12,7 +12,8 @@ set -Eeo pipefail
 #
 # Optional:
 #   With --compose-up, this script runs:
-#     docker compose up -d --pull never --no-build
+#     Docker Compose provider: docker compose up -d --pull never --no-build
+#     podman-compose provider: docker compose up -d --no-build
 #
 # Compatibility:
 #   - Bash 3+ compatible. Works with macOS default /bin/bash 3.2.
@@ -22,13 +23,13 @@ set -Eeo pipefail
 #   macOS ships Bash 3.2. With `set -u`, empty arrays can fail unexpectedly.
 #   This script avoids nounset for portability and validates values explicitly.
 
-SCRIPT_VERSION="1.2.3"
+SCRIPT_VERSION="1.2.4"
 
 MIN_DOCKER_VERSION="20.10.0"
 MIN_COMPOSE_VERSION="2.20.0"
 MIN_PODMAN_VERSION="5.0.0"
 MIN_PODMAN_COMPOSE_VERSION="1.5.0"
-MIN_RAM_MB="4096"
+MIN_RAM_MB="2048"
 MIN_DISK_MB="10240"
 
 IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
@@ -64,7 +65,8 @@ OPTIONS
 
   --compose-up
       Run docker compose up after all checks pass:
-        docker compose up -d --pull never --no-build
+        Docker Compose provider: docker compose up -d --pull never --no-build
+        podman-compose provider: docker compose up -d --no-build
 
   --allow-immutable-change
       Do not fail when immutable .env values changed after the initial lock
@@ -634,6 +636,19 @@ build_compose_args() {
 
 compose() {
   docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
+compose_provider_is_podman() {
+  [ "$(detect_compose_provider)" = "podman-compose" ]
+}
+
+compose_up_offline() {
+  if compose_provider_is_podman; then
+    info_msg "podman-compose provider detected. Using podman-compatible start command: docker compose up -d --no-build"
+    compose up -d --no-build "$@"
+  else
+    compose up -d --pull never --no-build "$@"
+  fi
 }
 
 join_by_space_quoted() {
@@ -1724,7 +1739,7 @@ write_immutable_env_lock_after_success() {
 
 run_compose_up() {
   log "Starting Docker Compose services..."
-  compose up -d --pull never --no-build
+  compose_up_offline
 }
 
 parse_args() {
@@ -1832,6 +1847,9 @@ main() {
 Next step:
   cd "$ROOT_DIR"
   docker compose up -d --pull never --no-build
+
+If this server uses podman-compose as the compose provider:
+  docker compose up -d --no-build
 
 Or run:
   ./scripts/preflight-onprem.sh --compose-up
