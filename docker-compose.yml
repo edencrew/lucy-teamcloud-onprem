@@ -31,29 +31,18 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
-      db:
-        condition: service_healthy
-      git:
-        condition: service_started
-      auth-be:
-        condition: service_healthy
-      auth-fe:
-        condition: service_started
-      tc-be:
-        condition: service_healthy
-      tc-fe:
-        condition: service_started
+      - db
+      - git
+      - auth-be
+      - auth-fe
+      - tc-be
+      - tc-fe
 
   git:
     image: docker.gitea.com/gitea:1.25.3
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
-      db:
-        condition: service_healthy
+      - db
     environment:
       - LUCY_ADMIN_NAME=${LUCY_ADMIN_NAME}
       - LUCY_ADMIN_PASSWORD=${LUCY_ADMIN_PASSWORD}
@@ -133,10 +122,7 @@ services:
     image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.8
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
-      db:
-        condition: service_healthy
+      - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
       interval: 5s
@@ -177,10 +163,7 @@ services:
     image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.10
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
-      db:
-        condition: service_healthy
+      - db
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
       interval: 5s

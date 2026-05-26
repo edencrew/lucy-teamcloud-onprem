@@ -40,7 +40,8 @@ DESCRIPTION
   the scripts directory.
 
   Because this script is used to create an offline package,
-  docker-compose.offline.yml is automatically included when it exists.
+  docker-compose.offline.yml and docker-compose.docker.yml are automatically
+  included when they exist.
 
 WHAT IT DOES
   1. Checks Docker installation and Docker daemon status.
@@ -141,7 +142,13 @@ AUTO-DETECTED COMPOSE FILES
     compose.offline.yaml
     compose.offline.yml
 
-  Override files, appended after offline files if they exist in PROJECT_ROOT:
+  Docker files, appended after offline files if they exist in PROJECT_ROOT:
+    docker-compose.docker.yaml
+    docker-compose.docker.yml
+    compose.docker.yaml
+    compose.docker.yml
+
+  Override files, appended after Docker files if they exist in PROJECT_ROOT:
     docker-compose.override.yaml
     docker-compose.override.yml
     compose.override.yaml
@@ -377,6 +384,11 @@ EOF_COMPOSE_FILES
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
       done
+      for f in docker-compose.docker.yaml docker-compose.docker.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
       for f in docker-compose.override.yaml docker-compose.override.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
@@ -385,6 +397,11 @@ EOF_COMPOSE_FILES
       ;;
     compose.yaml|compose.yml)
       for f in compose.offline.yaml compose.offline.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      for f in compose.docker.yaml compose.docker.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
         fi

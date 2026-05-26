@@ -1,6 +1,5 @@
 .env
 .DS_Store
-.docker-compose.podman-runtime.yml.*
 dmz/.env
 .idea/
 gw-data/

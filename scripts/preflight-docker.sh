@@ -139,7 +139,8 @@ EXAMPLES
 AUTO-DETECTED COMPOSE FILE ORDER
   1. Base compose file
   2. docker-compose.offline.yml / docker-compose.offline.yaml if present
-  3. docker-compose.override.yml / docker-compose.override.yaml if present
+  3. docker-compose.docker.yml / docker-compose.docker.yaml if present
+  4. docker-compose.override.yml / docker-compose.override.yaml if present
 
 CHECKS PERFORMED
   - Docker installed and daemon reachable
@@ -584,6 +585,11 @@ EOF_COMPOSE_FILES
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
       done
+      for f in docker-compose.docker.yaml docker-compose.docker.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
       for f in docker-compose.override.yaml docker-compose.override.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
@@ -592,6 +598,11 @@ EOF_COMPOSE_FILES
       ;;
     compose.yaml|compose.yml)
       for f in compose.offline.yaml compose.offline.yml; do
+        if [ -f "$ROOT_DIR/$f" ]; then
+          add_compose_file_unique "$ROOT_DIR/$f"
+        fi
+      done
+      for f in compose.docker.yaml compose.docker.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
         fi

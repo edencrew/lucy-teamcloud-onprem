@@ -12,8 +12,6 @@ services:
     volumes: !override
       - ./nginx/nginx.podman.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z
-    # Keep this untagged: podman-compose 1.5.0 crashes on !override here.
-    # Podman scripts strip base depends_on blocks before merging this file.
     depends_on:
       - db
       - git
