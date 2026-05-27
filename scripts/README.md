@@ -37,6 +37,7 @@ lucy-teamcloud-onprem/
     init-secrets.sh
     lib/
       onprem-common.sh
+      preflight-common.sh
 
   images/
     ...
@@ -127,13 +128,13 @@ Podman 전용 compatibility override 파일입니다.
 역할:
 
 ```text
-rootless Podman용 host port를 .env 값으로 매핑
 SELinux 환경용 bind mount label(:z) 적용
-auth-be / tc-be / git 내부 포트를 8080으로 변경
+Podman에서 처리 가능한 단순 depends_on으로 조정
+오프라인 빌드 이미지 태그로 override
 ```
 
-Podman에서는 `init-secrets`를 먼저 실행한 뒤 나머지 서비스를 올려야 하므로,
-직접 `docker compose up`을 실행하지 말고 다음 스크립트를 사용하세요.
+Podman에서는 preflight가 필요한 디렉터리와 `init-secrets` 산출물을 먼저 준비한 뒤,
+기동 단계에서는 단순한 compose up 명령만 실행합니다.
 
 ```bash
 ./scripts/preflight-podman.sh --compose-up
@@ -423,7 +424,7 @@ docker compose \
   up -d --pull never --no-build
 ```
 
-또는 검증 후 바로 실행하려면 다음 명령을 사용합니다.
+또는 검증 후 스크립트 안에서 같은 compose up 흐름을 실행하려면 다음 명령을 사용합니다.
 
 ```bash
 ./scripts/preflight-onprem.sh --compose-up
@@ -810,7 +811,7 @@ docker compose \
 ./scripts/onprem-compose.sh up
 ```
 
-또는 기존 preflight 흐름을 사용할 수 있습니다.
+또는 preflight 흐름을 사용할 수 있습니다.
 
 ```bash
 ./scripts/preflight-onprem.sh
@@ -986,7 +987,8 @@ rm -rf postgres/data git/data secrets/secrets.env .install-state
 그 뒤 `.env`를 다시 설정하고 실행합니다.
 
 ```bash
-./scripts/preflight-onprem.sh --compose-up
+./scripts/preflight-onprem.sh
+./scripts/onprem-compose.sh up
 ```
 
 운영 데이터가 있는 환경에서는 신중하게 실행해야 합니다.

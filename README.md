@@ -131,6 +131,8 @@ docker compose restart gw
 
 Rootless Podman에서 80/443을 사용할 수 없으면 rootful Podman/Docker를 사용하거나
 호스트에서 low port bind를 허용한 뒤 실행합니다.
+Podman preflight는 필요한 디렉터리와 `init-secrets` 산출물을 먼저 준비하고,
+기동 단계에서는 단순한 compose up 명령만 실행합니다.
 
 ```bash
 ./scripts/preflight-podman.sh --compose-up

@@ -41,7 +41,7 @@ COMMANDS
       Run scripts/preflight-podman.sh.
 
   up [SERVICE...]
-      Run preflight, run init-secrets once, then:
+      Run preflight, then:
         docker compose up -d --no-build [SERVICE...]
 
   down
@@ -54,11 +54,11 @@ COMMANDS
         docker compose restart [SERVICE...]
 
   recreate [SERVICE...]
-      Run preflight, run init-secrets once, then force-recreate containers without pulling/building:
+      Run preflight, then force-recreate containers without pulling/building:
         docker compose up -d --no-build --force-recreate [SERVICE...]
 
   restart-stack
-      Run docker compose down, then preflight, init-secrets, and compose up.
+      Run docker compose down, then preflight and compose up.
 
   replace-images ARCHIVE [SERVICE...]
       Verify ARCHIVE's sibling *.images.txt and *.services.txt, generate a
@@ -383,14 +383,6 @@ build_compose_args() {
 
 compose() {
   docker compose "${COMPOSE_ARGS[@]}" "$@"
-}
-
-compose_up_prerequisites() {
-  log "Starting init-secrets one-shot service..."
-  compose up --no-build init-secrets
-
-  log "Starting database service..."
-  compose up -d --no-build db
 }
 
 compose_with_extra_override() {
@@ -724,7 +716,6 @@ cmd_check() {
 
 cmd_up() {
   run_preflight
-  compose_up_prerequisites
   log "Starting services..."
   compose up -d --no-build "$@"
 }
@@ -742,7 +733,6 @@ cmd_restart() {
 
 cmd_recreate() {
   run_preflight
-  compose_up_prerequisites
   log "Recreating services..."
   compose up -d --no-build --force-recreate "$@"
 }
@@ -751,7 +741,6 @@ cmd_restart_stack() {
   log "Stopping stack while preserving data..."
   compose down
   run_preflight
-  compose_up_prerequisites
   log "Starting stack..."
   compose up -d --no-build
 }
@@ -772,7 +761,6 @@ cmd_replace_images() {
   load_archive "$VERIFIED_ARCHIVE"
   persist_verified_image_override "$VERIFIED_IMAGE_OVERRIDE_FILE"
   run_preflight
-  compose_up_prerequisites
   log "Recreating services with loaded images..."
   compose up -d --no-build --force-recreate "$@"
 }
