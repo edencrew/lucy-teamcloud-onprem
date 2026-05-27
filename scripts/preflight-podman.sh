@@ -871,7 +871,7 @@ validate_required_env() {
 
   ok ".env exists"
 
-  local required_keys="EXTERNAL_URL BROKER_WS_URL HTTP_PORT HTTPS_PORT BROKER_MQTT_PORT BROKER_WS_PORT BROKER_WSS_PORT BROKER_HTTP_PORT LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD LUCY_ADMIN_NAME DB_ROOT_PASSWORD DB_USERNAME DB_PASSWORD TZ"
+  local required_keys="EXTERNAL_URL BROKER_WS_URL LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD LUCY_ADMIN_NAME DB_ROOT_PASSWORD DB_USERNAME DB_PASSWORD TZ"
   local key value
 
   for key in $required_keys; do
@@ -1545,8 +1545,7 @@ validate_ports() {
 
     if [ "$(id -u)" != "0" ] && [ "$port" -lt "$unprivileged_start" ]; then
       fail_msg "Rootless Podman cannot publish host privileged port $port (ip_unprivileged_port_start=$unprivileged_start)"
-      warn "Set non-privileged ports in .env, for example HTTP_PORT=10080 and HTTPS_PORT=10443."
-      warn "Or allow low ports on the host, for example: sudo sysctl net.ipv4.ip_unprivileged_port_start=$port"
+      warn "Use Docker/rootful Podman, or allow low ports on the host, for example: sudo sysctl net.ipv4.ip_unprivileged_port_start=$port"
     fi
 
     if is_port_in_use "$port"; then

@@ -41,112 +41,20 @@ mkdir -p "${ETC_DIR}" "${VMQ_HOME}/data" "${VMQ_HOME}/log"
 export HOME="${VMQ_HOME}"
 export RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-${VMQ_HOME}/log}"
 export PIPE_DIR="${PIPE_DIR:-/tmp/erl_pipes}"
+mkdir -p "${RUNNER_LOG_DIR}/VerneMQ" "${PIPE_DIR}"
+chmod 1777 "${PIPE_DIR}" || true
+chown -R vernemq:vernemq "${RUNNER_LOG_DIR}" "${PIPE_DIR}" || true
+LOG_FILE="${RUNNER_LOG_DIR}/VerneMQ/console.log"; : > "${LOG_FILE}" || true
 
-numeric_id(){ [[ "$1" =~ ^[0-9]+$ ]]; }
-
-stat_uid() {
-  stat -c '%u' "$1" 2>/dev/null || true
-}
-
-stat_gid() {
-  stat -c '%g' "$1" 2>/dev/null || true
-}
-
-detect_data_owner() {
-  local path="$1"
-  local uid gid
-
-  uid="$(stat_uid "$path")"
-  gid="$(stat_gid "$path")"
-
-  if numeric_id "${uid:-}" && numeric_id "${gid:-}" && [[ "$uid" != "0" ]]; then
-    VMQ_UID="$uid"
-    VMQ_GID="$gid"
-    log "[entrypoint] detected /vernemq/data owner -> ${VMQ_UID}:${VMQ_GID}"
-    return 0
-  fi
-
-  return 1
-}
-
-ensure_owned_recursive() {
-  local path="$1"
-  local uid="$2"
-  local gid="$3"
-  local mismatch
-
-  [ -e "$path" ] || return 0
-
-  mismatch="$(find "$path" \( ! -user "$uid" -o ! -group "$gid" \) -print -quit 2>/dev/null || true)"
-  if [[ -n "$mismatch" ]]; then
-    log "[entrypoint] chown ${path} -> ${uid}:${gid}"
-    chown -R "${uid}:${gid}" "$path" || die "failed to chown ${path} to ${uid}:${gid}"
-  fi
-}
-
-prepare_vmq_paths() {
-  if [[ "$(id -u)" != "0" ]]; then
-    return 0
-  fi
-
-  ensure_owned_recursive "${ETC_DIR}" "$VMQ_UID" "$VMQ_GID"
-  ensure_owned_recursive "${VMQ_HOME}/data" "$VMQ_UID" "$VMQ_GID"
-  ensure_owned_recursive "${RUNNER_LOG_DIR}" "$VMQ_UID" "$VMQ_GID"
-  ensure_owned_recursive "${PIPE_DIR}" "$VMQ_UID" "$VMQ_GID"
-}
-
-remap_vmq_user() {
-  local data_uid data_gid has_explicit_owner
-
-  if [[ "$(id -u)" != "0" ]]; then
-    return 0
-  fi
-
-  has_explicit_owner=0
-  if [[ -n "${VMQ_UID:-}" || -n "${VMQ_GID:-}" ]]; then
-    has_explicit_owner=1
-  fi
-
-  if [[ "$has_explicit_owner" == "1" && ( -z "${VMQ_UID:-}" || -z "${VMQ_GID:-}" ) ]]; then
-    die "VMQ_UID and VMQ_GID must be set together. Run preflight or set HOST_UID/HOST_GID in .env."
-  fi
-
-  if [[ -z "${VMQ_UID:-}" || -z "${VMQ_GID:-}" ]]; then
-    data_uid="$(stat_uid "${VMQ_HOME}/data")"
-    data_gid="$(stat_gid "${VMQ_HOME}/data")"
-
-    if [[ "$data_uid" == "0" ]]; then
-      die "/vernemq/data is root-owned and VMQ_UID/VMQ_GID are not set. Run ./scripts/preflight-onprem.sh or set HOST_UID/HOST_GID in .env before recreating broker."
-    fi
-
-    if numeric_id "${data_uid:-}" && numeric_id "${data_gid:-}"; then
-      detect_data_owner "${VMQ_HOME}/data" || true
-    fi
-  fi
-
-  if [[ -z "${VMQ_UID:-}" || -z "${VMQ_GID:-}" ]]; then
-    VMQ_UID="$(id -u vernemq)"
-    VMQ_GID="$(id -g vernemq)"
-    log "[entrypoint] VMQ_UID/VMQ_GID unset; using image default vernemq uid:gid -> ${VMQ_UID}:${VMQ_GID}"
-  fi
-
-  if ! numeric_id "$VMQ_UID" || ! numeric_id "$VMQ_GID"; then
-    die "VMQ_UID/VMQ_GID must be numeric: ${VMQ_UID}:${VMQ_GID}"
-  fi
-
+# UID/GID 재매핑(선택)
+if [[ "$(id -u)" == "0" && -n "${VMQ_UID:-}" && -n "${VMQ_GID:-}" ]]; then
   log "[entrypoint] remap vernemq uid:gid -> ${VMQ_UID}:${VMQ_GID}"
   getent group vernemq >/dev/null 2>&1 && groupmod -o -g "${VMQ_GID}" vernemq || groupadd -g "${VMQ_GID}" vernemq
   if id vernemq >/dev/null 2>&1; then
     usermod -o -u "${VMQ_UID}" -g "${VMQ_GID}" vernemq || true
   else useradd -m -u "${VMQ_UID}" -g "${VMQ_GID}" -d "${VMQ_HOME}" -s /sbin/nologin vernemq; fi
-}
-remap_vmq_user
-
-mkdir -p "${RUNNER_LOG_DIR}/VerneMQ" "${PIPE_DIR}"
-chmod 1777 "${PIPE_DIR}" || true
-prepare_vmq_paths
-LOG_FILE="${RUNNER_LOG_DIR}/VerneMQ/console.log"; : > "${LOG_FILE}" || true
-chown vernemq:vernemq "${LOG_FILE}" || true
+  chown -R "${VMQ_UID}:${VMQ_GID}" "${VMQ_HOME}" || true
+fi
 
 # 1) 네트워크 정보
 detect_iface(){ ip -o route show default 2>/dev/null | awk '{print $5; exit}'; }
@@ -168,7 +76,6 @@ cat >/vernemq/etc/inetrc <<'EOF'
 {lookup, [file, dns]}.
 {hosts_file, "/vernemq/etc/hosts"}.
 EOF
-chown vernemq:vernemq /vernemq/etc/hosts /vernemq/etc/inetrc || true
 export ERL_INETRC=/vernemq/etc/inetrc
 log "[diag] ERL_INETRC=${ERL_INETRC}"
 
@@ -225,7 +132,6 @@ maybe_generate_vm_args
 
 # 3) 환경변수 → vernemq.conf (USER_*는 비번파일)
 : > "${CONF_FILE}"
-chown vernemq:vernemq "${CONF_FILE}" || true
 wrote_passwd=0
 while IFS='=' read -r K V; do
   [[ "$K" == DOCKER_VERNEMQ_* ]] || continue
@@ -265,7 +171,7 @@ grep -Eq '^[[:space:]]*listener\.http\.'                    "${CONF_FILE}" || ec
 if ! as_vmq vernemq config generate > /tmp/config.out 2>&1; then
   echo "[config]"; sed -n '1,200p' /tmp/config.out; die "cuttlefish generate failed"
 fi
-log "[config] pre-start generate OK"
+log "config is OK"
 
 # pre-start epmd on the chosen IP (helps distribution init)
 ERTS_BIN="$(ls -d /vernemq/erts-*/bin 2>/dev/null | head -1 || true)"

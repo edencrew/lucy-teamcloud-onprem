@@ -129,8 +129,8 @@ docker compose restart gw
 
 ### 4.2 Podman Compose 실행
 
-Rootless Podman에서 80/443을 사용할 수 없으면 `.env`의 `EXTERNAL_URL`,
-`BROKER_WS_URL`, `HTTP_PORT`, `HTTPS_PORT`를 같은 포트로 맞춘 뒤 실행합니다.
+Rootless Podman에서 80/443을 사용할 수 없으면 rootful Podman/Docker를 사용하거나
+호스트에서 low port bind를 허용한 뒤 실행합니다.
 
 ```bash
 ./scripts/preflight-podman.sh --compose-up
