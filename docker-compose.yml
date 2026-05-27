@@ -184,7 +184,7 @@ services:
       DB_DATABASE: lucy_teamcloud
       DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
       GIT_PROVIDER: gitea  # onprem 은 gitea 고정
-      GIT_HOST: http://git
+      GIT_HOST: http://git:18080
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
       GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
       WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
