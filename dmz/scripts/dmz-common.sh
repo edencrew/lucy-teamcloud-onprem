@@ -162,15 +162,34 @@ init_dmz_context() {
   sdir="$(script_dir)"
   DMZ_SCRIPT_DIR="$sdir"
   DMZ_ROOT_DIR="$(resolve_dmz_root "$sdir")"
+  DMZ_RUNTIME_RESOLVED="${DMZ_RUNTIME:-docker}"
+
+  case "$DMZ_RUNTIME_RESOLVED" in
+    docker|podman)
+      ;;
+    *)
+      die "Unsupported DMZ runtime: $DMZ_RUNTIME_RESOLVED"
+      ;;
+  esac
 
   [ -f "$DMZ_ROOT_DIR/docker-compose.yml" ] || die "DMZ compose file not found: $DMZ_ROOT_DIR/docker-compose.yml"
 
   select_env_file "$env_mode"
 
   DMZ_COMPOSE_FILES=("$DMZ_ROOT_DIR/docker-compose.yml")
-  if ! dmz_tls_enabled; then
-    [ -f "$DMZ_ROOT_DIR/docker-compose.ws.yml" ] || die "DMZ plain WS override not found: $DMZ_ROOT_DIR/docker-compose.ws.yml"
-    DMZ_COMPOSE_FILES+=("$DMZ_ROOT_DIR/docker-compose.ws.yml")
+  if [ "$DMZ_RUNTIME_RESOLVED" = "podman" ]; then
+    [ -f "$DMZ_ROOT_DIR/docker-compose.podman.yml" ] || die "DMZ Podman override not found: $DMZ_ROOT_DIR/docker-compose.podman.yml"
+    DMZ_COMPOSE_FILES+=("$DMZ_ROOT_DIR/docker-compose.podman.yml")
+
+    if ! dmz_tls_enabled; then
+      [ -f "$DMZ_ROOT_DIR/docker-compose.podman.ws.yml" ] || die "DMZ Podman plain WS override not found: $DMZ_ROOT_DIR/docker-compose.podman.ws.yml"
+      DMZ_COMPOSE_FILES+=("$DMZ_ROOT_DIR/docker-compose.podman.ws.yml")
+    fi
+  else
+    if ! dmz_tls_enabled; then
+      [ -f "$DMZ_ROOT_DIR/docker-compose.ws.yml" ] || die "DMZ plain WS override not found: $DMZ_ROOT_DIR/docker-compose.ws.yml"
+      DMZ_COMPOSE_FILES+=("$DMZ_ROOT_DIR/docker-compose.ws.yml")
+    fi
   fi
 
   DMZ_COMPOSE_ARGS=()
@@ -187,11 +206,76 @@ require_docker_compose() {
 
 require_docker_daemon() {
   require_docker_compose
-  docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
+  docker info >/dev/null 2>&1 || die "Container runtime is not running or current user cannot access it."
+}
+
+detect_dmz_runtime() {
+  require_cmd docker
+
+  local output
+  output="$(
+    docker compose version 2>&1 || true
+    docker version 2>&1 || true
+  )"
+
+  case "$output" in
+    *Podman*|*podman*|*libpod*|*Libpod*)
+      printf '%s' "podman"
+      ;;
+    *)
+      printf '%s' "docker"
+      ;;
+  esac
+}
+
+require_docker_runtime() {
+  require_docker_daemon
+
+  if [ "$(detect_dmz_runtime)" = "podman" ]; then
+    die "docker compose appears to target Podman. Use the matching Podman DMZ script."
+  fi
+}
+
+require_podman_runtime() {
+  require_docker_daemon
+
+  if [ "$(detect_dmz_runtime)" != "podman" ]; then
+    die "docker compose does not appear to target Podman. Use Docker scripts or configure Docker CLI emulation for Podman."
+  fi
+}
+
+require_dmz_selected_runtime() {
+  case "${DMZ_RUNTIME_RESOLVED:-${DMZ_RUNTIME:-docker}}" in
+    docker)
+      require_docker_runtime
+      ;;
+    podman)
+      require_podman_runtime
+      ;;
+    *)
+      die "Unsupported DMZ runtime: ${DMZ_RUNTIME_RESOLVED:-${DMZ_RUNTIME:-}}"
+      ;;
+  esac
 }
 
 dmz_compose() {
   (cd "$DMZ_ROOT_DIR" && docker compose --env-file "$DMZ_ENV_FILE_RESOLVED" "${DMZ_COMPOSE_ARGS[@]}" "$@")
+}
+
+dmz_compose_up() {
+  if [ "${DMZ_RUNTIME_RESOLVED:-docker}" = "podman" ]; then
+    dmz_compose up -d --no-build "$@"
+  else
+    dmz_compose up -d --pull never --no-build "$@"
+  fi
+}
+
+dmz_compose_recreate() {
+  if [ "${DMZ_RUNTIME_RESOLVED:-docker}" = "podman" ]; then
+    dmz_compose up -d --no-build --force-recreate "$@"
+  else
+    dmz_compose up -d --pull never --no-build --force-recreate "$@"
+  fi
 }
 
 dmz_compose_images() {

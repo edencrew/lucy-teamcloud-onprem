@@ -1,0 +1,6 @@
+services:
+  dmz-mqtt-proxy:
+    ports: !override
+      - "18080:80"
+    environment:
+      DMZ_ENABLE_TLS: "0"
