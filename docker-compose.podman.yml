@@ -18,6 +18,7 @@ services:
       - tc-fe
 
   git:
+    user: "0:0"
     volumes: !override
       - ./git/data:/data:z
       - ./git/app.ini:/app.ini.default:ro,z
