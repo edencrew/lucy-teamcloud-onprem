@@ -25,8 +25,8 @@ services:
     networks:
       - internal-network
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
@@ -101,11 +101,11 @@ services:
       # 디버깅 시 override.yml 에서 debug 로 올릴 수 있도록 compose 에 노출
       DOCKER_VERNEMQ_LOG__CONSOLE: both
       DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: info
-    ports:  # 호스트 포트는 .env 의 BROKER_*_PORT 로 조정
-      - "1883:1883"      # MQTT
-      - "8080:8080"        # WebSocket
-      - "8081:8081"       # Secured WebSocket
-      - "8888:8888"    # HTTP status port
+    ports:
+      - "${BROKER_MQTT_PORT:-1883}:1883"      # MQTT
+      - "${BROKER_WS_PORT:-8080}:8080"        # WebSocket
+      - "${BROKER_WSS_PORT:-8081}:8081"       # Secured WebSocket
+      - "${BROKER_HTTP_PORT:-8888}:8888"      # HTTP status port
     volumes:
       - ./broker/logs:/vernemq/log
       - ./broker/data:/vernemq/data
