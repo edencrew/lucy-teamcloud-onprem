@@ -72,6 +72,39 @@ cd lucy-teamcloud-onprem
 ./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
 ```
 
+## DMZ 서버
+
+DMZ 폴더에서 실행합니다.
+
+```bash
+cd dmz
+```
+
+처음 설치 또는 이미지 압축 파일을 받은 경우:
+
+```bash
+./scripts/load-images-and-up.sh
+```
+
+상태와 로그 확인:
+
+```bash
+./scripts/dmz-compose.sh ps
+./scripts/dmz-compose.sh logs
+```
+
+설정 변경 후 재생성:
+
+```bash
+./scripts/dmz-compose.sh recreate
+```
+
+중지:
+
+```bash
+./scripts/dmz-compose.sh down
+```
+
 ## 주의
 
 - `docker compose down -v`는 실행하지 마세요. 데이터가 삭제될 수 있습니다.

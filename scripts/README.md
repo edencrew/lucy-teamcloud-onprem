@@ -518,6 +518,36 @@ preflight resource check를 건너뛰고 특정 서비스 컨테이너를 재생
 
 ---
 
+## 4.6 DMZ 운영 유틸 스크립트
+
+DMZ 서버에서는 `dmz/` 폴더 안에서 onprem과 같은 방식의 wrapper를 사용합니다.
+
+```bash
+cd dmz
+./scripts/dmz-compose.sh up
+./scripts/dmz-compose.sh ps
+./scripts/dmz-compose.sh logs
+./scripts/dmz-compose.sh recreate
+./scripts/dmz-compose.sh down
+```
+
+처음 설치하거나 DMZ 이미지 압축 파일을 새로 받은 경우에는 먼저 이미지를 로드하고
+기동합니다.
+
+```bash
+cd dmz
+./scripts/load-images-and-up.sh
+```
+
+명시적으로 런타임을 고정해야 하면 다음 스크립트를 사용합니다.
+
+```bash
+./scripts/dmz-compose-docker.sh up
+./scripts/dmz-compose-podman.sh up
+```
+
+---
+
 # 5. `.env` 설정
 
 ## 5.1 `.env` 파일 생성
@@ -1174,10 +1204,12 @@ Error creating /vernemq/data/generated.configs: permission denied
 
 `broker/data` bind mount 소유권과 컨테이너 내부 `vernemq` 실행 UID가 맞지 않는 상태입니다.
 
-먼저 preflight로 runtime 디렉터리 소유권을 준비합니다.
+Podman에서는 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다. `preflight-podman.sh`는
+브로커 이미지 안의 `vernemq` UID/GID를 확인한 뒤 `podman unshare chown`으로
+`broker/data`, `broker/logs` 소유권을 맞춥니다.
 
 ```bash
-./scripts/preflight-onprem.sh
+./scripts/preflight-podman.sh --skip-resource-check
 ```
 
 운영 계정의 UID/GID를 명시하려면 `.env`에 다음 값을 설정합니다.

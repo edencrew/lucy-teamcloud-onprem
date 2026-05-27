@@ -45,28 +45,69 @@ DMZ_ENABLE_TLS=0
 INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
 ```
 
-Mobile clients then connect to:
+In Docker plain WS mode, mobile clients connect to:
 
 ```text
 ws://203.0.113.10/mqtt
 ```
 
-Start the proxy in WSS mode:
+Podman 환경의 기본 포트는 rootless 환경을 고려해 `18080/18443`으로 고정되어 있습니다.
+
+```text
+https://<dmz-host>:18443/mqtt
+# or, in plain WS mode:
+http://<dmz-host>:18080/mqtt
+```
+
+The scripts under `dmz/scripts/` are standalone and do not call the parent
+on-premise `scripts/` directory. For daily operation, use
+`dmz-compose.sh <command>` in the same style as the on-premise
+`onprem-compose.sh <command>` wrapper.
+
+Auto-detect Docker or Podman:
+
+```bash
+./scripts/dmz-compose.sh check
+./scripts/dmz-compose.sh up
+./scripts/dmz-compose.sh ps
+./scripts/dmz-compose.sh logs
+./scripts/dmz-compose.sh down
+```
+
+Runtime-specific commands are also available:
+
+```bash
+./scripts/dmz-compose-docker.sh up
+./scripts/dmz-compose-podman.sh up
+```
+
+The wrapper selects the TLS/plain-WS compose override from `DMZ_ENABLE_TLS`.
+Podman uses `docker-compose.podman.yml`, and plain WS adds
+`docker-compose.podman.ws.yml`.
+
+Equivalent Docker command for WSS mode:
 
 ```bash
 docker compose --env-file .env up -d
 ```
 
-Start the proxy in plain WS mode:
+Equivalent Docker command for plain WS mode:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.ws.yml --env-file .env up -d
 ```
 
-The scripts under `dmz/scripts/` are standalone and do not call the parent
-on-premise `scripts/` directory. They use `dmz/` as their project root, write
-archives under `dmz/images/` by default, and automatically include
-`docker-compose.ws.yml` when `DMZ_ENABLE_TLS=0`.
+Equivalent Podman command for WSS mode:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.podman.yml up -d --no-build
+```
+
+Equivalent Podman command for plain WS mode:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.podman.yml -f docker-compose.podman.ws.yml up -d --no-build
+```
 
 ## Offline Image Flow
 
@@ -88,27 +129,47 @@ dmz/images/lucy-teamcloud-dmz-images-linux-amd64.explicit-images.txt
 dmz/images/lucy-teamcloud-dmz-images-linux-amd64.services.txt
 ```
 
-Copy `dmz/` and `dmz/images/` to the DMZ server, create `dmz/.env`, then run:
+Copy `dmz/` and `dmz/images/` to the DMZ server, create `dmz/.env`, then run
+one of the runtime-specific scripts.
+
+Docker:
 
 ```bash
 cd dmz
-./scripts/load-images-and-up.sh
+./scripts/load-images-and-up-docker.sh
+```
+
+Podman:
+
+```bash
+cd dmz
+./scripts/load-images-and-up-podman.sh
 ```
 
 Or specify the archive explicitly:
 
 ```bash
-./scripts/load-images-and-up.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
+./scripts/load-images-and-up-docker.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
+# or:
+./scripts/load-images-and-up-podman.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
 ```
 
 After changing `dmz/.env`, apply the change with:
 
 ```bash
-./scripts/restart-after-env-change.sh
+./scripts/dmz-compose.sh recreate
 ```
 
-The restart script validates the new env and compose config before stopping the
-running DMZ proxy.
+The recreate command validates the new env and compose config before replacing
+the running DMZ proxy. Compatibility wrappers are also available:
+`./scripts/load-images-and-up.sh`, `./scripts/restart-after-env-change.sh`,
+and `./scripts/down.sh`.
+
+Stop the DMZ proxy while preserving files:
+
+```bash
+./scripts/dmz-compose.sh down
+```
 
 Check health:
 
@@ -116,6 +177,9 @@ Check health:
 curl -k https://mqtt.company.com/health
 # or, in plain WS mode:
 curl http://203.0.113.10/health
+# or, with Podman defaults:
+curl -k https://203.0.113.10:18443/health
+curl http://203.0.113.10:18080/health
 ```
 
 ## Network Policy
@@ -126,7 +190,8 @@ curl http://203.0.113.10/health
 - Do not expose internal broker ports `1883`, `8080`, `8081`, or `8888` to the internet.
 
 If mobile clients receive the broker URL from TeamCloud, set the internal
-on-prem `.env` value to the DMZ URL:
+on-prem `.env` value to the DMZ URL. This value must match the DMZ endpoint
+clients can reach:
 
 ```env
 BROKER_WS_URL=wss://mqtt.company.com/mqtt
@@ -136,6 +201,14 @@ In plain WS mode:
 
 ```env
 BROKER_WS_URL=ws://203.0.113.10/mqtt
+```
+
+With the Podman DMZ default ports:
+
+```env
+BROKER_WS_URL=wss://203.0.113.10:18443/mqtt
+# or:
+BROKER_WS_URL=ws://203.0.113.10:18080/mqtt
 ```
 
 ## Security Note
