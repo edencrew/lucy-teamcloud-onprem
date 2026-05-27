@@ -7,8 +7,8 @@ services:
 
   gw:
     ports: !override
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT}:80"
+      - "${HTTPS_PORT}:443"
     volumes: !override
       - ./nginx/nginx.podman.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z
@@ -39,10 +39,10 @@ services:
   broker:
     image: localhost/lucy-teamcloud-onprem-broker:offline
     ports: !override
-      - "${BROKER_MQTT_PORT:-1883}:1883"
-      - "${BROKER_WS_PORT:-8080}:8080"
-      - "${BROKER_WSS_PORT:-8081}:8081"
-      - "${BROKER_HTTP_PORT:-8888}:8888"
+      - "${BROKER_MQTT_PORT}:1883"
+      - "${BROKER_WS_PORT}:8080"
+      - "${BROKER_WSS_PORT}:8081"
+      - "${BROKER_HTTP_PORT}:8888"
     volumes: !override
       - ./broker/logs:/vernemq/log:z
       - ./broker/data:/vernemq/data:z
