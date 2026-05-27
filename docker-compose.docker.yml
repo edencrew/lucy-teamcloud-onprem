@@ -1,0 +1,38 @@
+services:
+  gw:
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      git:
+        condition: service_started
+      auth-be:
+        condition: service_healthy
+      auth-fe:
+        condition: service_started
+      tc-be:
+        condition: service_healthy
+      tc-fe:
+        condition: service_started
+
+  git:
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+
+  auth-be:
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+
+  tc-be:
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
