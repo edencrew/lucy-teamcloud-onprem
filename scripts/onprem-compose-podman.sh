@@ -370,6 +370,11 @@ append_installed_image_override() {
 
 build_compose_args() {
   COMPOSE_ARGS=()
+
+  if [ -f "$ROOT_DIR/.env" ]; then
+    COMPOSE_ARGS+=("--env-file" "$ROOT_DIR/.env")
+  fi
+
   local f
   for f in "${COMPOSE_FILE_LIST[@]}"; do
     COMPOSE_ARGS+=("-f" "$f")
