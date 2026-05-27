@@ -1,4 +1,6 @@
 .env
+.DS_Store
+dmz/.env
 .idea/
 gw-data/
 docker-compose.override.yml
@@ -10,3 +12,8 @@ git/data/
 postgres/data/
 nginx/certs/*
 !nginx/certs/.gitkeep
+dmz/certs/*
+!dmz/certs/.gitkeep
+*.bak
+images/
+.install-state/

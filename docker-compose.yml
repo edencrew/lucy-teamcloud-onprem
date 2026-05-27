@@ -31,8 +31,6 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
       git:
@@ -50,8 +48,6 @@ services:
     image: docker.gitea.com/gitea:1.25.3
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
     environment:
@@ -105,7 +101,7 @@ services:
       # 디버깅 시 override.yml 에서 debug 로 올릴 수 있도록 compose 에 노출
       DOCKER_VERNEMQ_LOG__CONSOLE: both
       DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: info
-    ports:  # 호스트 포트는 .env 의 BROKER_*_PORT 로 조정
+    ports:
       - "1883:1883"      # MQTT
       - "8080:8080"        # WebSocket
       - "8081:8081"       # Secured WebSocket
@@ -125,8 +121,6 @@ services:
     image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.8
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
     healthcheck:
@@ -169,8 +163,6 @@ services:
     image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.11
     restart: unless-stopped
     depends_on:
-      init-secrets:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
     healthcheck:
@@ -192,7 +184,7 @@ services:
       DB_DATABASE: lucy_teamcloud
       DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
       GIT_PROVIDER: gitea  # onprem 은 gitea 고정
-      GIT_HOST: http://git
+      GIT_HOST: http://git:18080
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
       GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
       WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
