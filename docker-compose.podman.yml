@@ -38,6 +38,7 @@ services:
       - ./broker/data:/vernemq/data:z
 
   auth-be:
+    user: "0:0"
     depends_on:
       - db
     volumes: !override
@@ -47,6 +48,7 @@ services:
       - ./auth/logs:/app/logs:z
 
   tc-be:
+    user: "0:0"
     depends_on:
       - db
     volumes: !override
