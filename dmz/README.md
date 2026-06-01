@@ -187,7 +187,7 @@ curl http://203.0.113.10:18080/health
 - Internet/mobile clients should reach only DMZ TCP 443.
 - In plain WS mode, clients reach DMZ TCP 80 instead.
 - DMZ should reach only the internal TeamCloud nginx HTTPS origin.
-- Do not expose internal broker ports `1883`, `8080`, `8081`, or `8888` to the internet.
+- Do not expose internal broker ports `1883` or `8080` to the internet.
 
 If mobile clients receive the broker URL from TeamCloud, set the internal
 on-prem `.env` value to the DMZ URL. This value must match the DMZ endpoint
@@ -214,7 +214,7 @@ BROKER_WS_URL=ws://203.0.113.10:18080/mqtt
 ## Security Note
 
 This proxy does not add broker authentication or topic ACLs. The current broker
-image defaults to anonymous access, so external production exposure requires a
+configuration allows anonymous access, so external production exposure requires a
 separate broker authentication and ACL hardening task.
 
 Plain `ws://` mode sends MQTT-over-WebSocket traffic without TLS. Use it only

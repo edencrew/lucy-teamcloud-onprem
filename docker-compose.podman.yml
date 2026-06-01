@@ -6,11 +6,13 @@ services:
       - ./nginx/certs:/certs:z
 
   gw:
+    image: localhost/nginx:1.26-alpine
     volumes: !override
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
       - ./nginx/certs:/etc/nginx/certs:ro,z
     depends_on:
       - db
+      - broker
       - git
       - auth-be
       - auth-fe
@@ -27,15 +29,17 @@ services:
       - db
 
   db:
+    image: localhost/postgres:17
     volumes: !override
       - ./postgres/data:/var/lib/postgresql/data:z
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro,z
 
   broker:
-    image: localhost/lucy-teamcloud-onprem-broker:offline
+    image: localhost/eclipse-mosquitto:2.0.22
     volumes: !override
-      - ./broker/logs:/vernemq/log:z
-      - ./broker/data:/vernemq/data:z
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,z
+      - ./broker/data:/mosquitto/data:z
+      - ./broker/logs:/mosquitto/log:z
 
   auth-be:
     user: "0:0"

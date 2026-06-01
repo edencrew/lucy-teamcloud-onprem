@@ -273,13 +273,20 @@ prepare_init_secrets_outputs() {
   local secrets="$ROOT_DIR/secrets/secrets.env"
   local cert="$ROOT_DIR/nginx/certs/server.crt"
   local key="$ROOT_DIR/nginx/certs/server.key"
+  local external_url
 
   if [ -f "$secrets" ] && [ -f "$cert" ] && [ -f "$key" ]; then
     return 0
   fi
 
+  external_url="$(get_env_value EXTERNAL_URL)"
+
   log "Preparing init-secrets outputs..."
-  if compose up --no-build init-secrets; then
+  if docker run --rm --pull=never \
+    -e "EXTERNAL_URL=$external_url" \
+    -v "$ROOT_DIR/secrets:/secrets:z" \
+    -v "$ROOT_DIR/nginx/certs:/certs:z" \
+    localhost/lucy-teamcloud-onprem-init-secrets:offline; then
     ok "init-secrets completed"
   else
     fail_msg "init-secrets failed"
@@ -287,55 +294,7 @@ prepare_init_secrets_outputs() {
 }
 
 prepare_and_validate_directories() {
-  prepare_bind_mount_directories "secrets nginx/certs license" "postgres/data git/data"
-}
-
-get_broker_image() {
-  get_compose_service_meta | awk -F '\t' '$1 == "broker" && $2 != "" { print $2; exit }'
-}
-
-get_broker_vernemq_ids() {
-  local image="$1"
-
-  docker run --rm --network none --entrypoint sh "$image" -c 'id -u vernemq; id -g vernemq' 2>/dev/null || true
-}
-
-prepare_podman_broker_directories() {
-  log "Preparing Podman broker data directory ownership..."
-
-  local image ids uid gid rel full
-  image="$(get_broker_image)"
-
-  if [ -z "$image" ]; then
-    fail_msg "Could not determine broker image from compose config"
-    return 0
-  fi
-
-  if ! docker image inspect "$image" >/dev/null 2>&1; then
-    fail_msg "Cannot prepare broker data ownership because image is missing: $image"
-    return 0
-  fi
-
-  ids="$(get_broker_vernemq_ids "$image")"
-  uid="$(printf '%s\n' "$ids" | sed -n '1p')"
-  gid="$(printf '%s\n' "$ids" | sed -n '2p')"
-
-  if [ -z "$uid" ] || [ -z "$gid" ]; then
-    fail_msg "Could not detect vernemq UID/GID from broker image: $image"
-    return 0
-  fi
-
-  for rel in broker/data broker/logs; do
-    ensure_directory_exists "$rel" || continue
-    full="$ROOT_DIR/$rel"
-    info_msg "Preparing Podman ownership: $rel -> container ${uid}:${gid}"
-    if podman unshare chown -R "$uid:$gid" "$full" 2>/dev/null; then
-      ok "Podman broker directory ownership prepared: $rel"
-    else
-      fail_msg "Podman broker directory ownership preparation failed: $rel"
-      warn "Suggested fix: podman unshare chown -R ${uid}:${gid} $(shell_quote "$full")"
-    fi
-  done
+  prepare_bind_mount_directories "secrets nginx/certs license" "postgres/data git/data broker/data broker/logs"
 }
 
 run_compose_up() {
@@ -430,7 +389,6 @@ main() {
   validate_compose_config
   validate_ports
   validate_local_images
-  prepare_podman_broker_directories
   validate_image_architectures
   prepare_init_secrets_outputs
   validate_certificates

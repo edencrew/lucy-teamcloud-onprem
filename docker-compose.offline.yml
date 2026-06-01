@@ -15,11 +15,5 @@ services:
     command: null
 
   broker:
-    # Offline package/runtime image name for the locally built broker.
-    # Keep docker-compose.yml unchanged for normal online/dev usage.
-    image: lucy-teamcloud-onprem-broker:offline
-
-    # Target platform for offline packaging/runtime.
-    # Example override:
-    #   TARGET_PLATFORM=linux/arm64 ./scripts/export-compose-images.sh
+    image: eclipse-mosquitto:2.0.22
     platform: ${TARGET_PLATFORM:-linux/amd64}

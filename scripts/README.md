@@ -42,6 +42,11 @@ lucy-teamcloud-onprem/
   images/
     ...
 
+  broker/
+    mosquitto.conf
+    data/
+    logs/
+
   license/
     license.json
 
@@ -69,15 +74,15 @@ lucy-teamcloud-onprem/
 
 일반적인 온라인/개발 환경에서도 사용할 수 있도록 기존 동작을 최대한 유지합니다.
 
-특히 `broker` 서비스는 기본 compose 파일에서는 직접 빌드합니다.
+`broker` 서비스는 공식 Mosquitto 이미지를 사용합니다.
 
 ```yaml
 broker:
-  build:
-    context: ./broker
+  image: eclipse-mosquitto:2.0.22
 ```
 
-즉, 기본 `docker-compose.yml`은 폐쇄망 전용 이미지명을 강제하지 않습니다.
+broker 설정은 `broker/mosquitto.conf`를 `/mosquitto/config/mosquitto.conf`로
+mount합니다.
 
 ---
 
@@ -85,12 +90,13 @@ broker:
 
 폐쇄망 패키징 및 폐쇄망 실행을 위한 추가 compose 파일입니다.
 
-이 파일은 `broker` 서비스를 폐쇄망에서 사용할 수 있도록 이미지명을 부여합니다.
+이 파일은 폐쇄망 패키징/실행 시 broker 이미지를 같은 공식 Mosquitto tag로 고정하고
+대상 플랫폼을 명시합니다.
 
 ```yaml
 services:
   broker:
-    image: lucy-teamcloud-onprem-broker:offline
+    image: eclipse-mosquitto:2.0.22
     platform: ${TARGET_PLATFORM:-linux/amd64}
 ```
 
@@ -130,8 +136,11 @@ Podman 전용 compatibility override 파일입니다.
 ```text
 SELinux 환경용 bind mount label(:z) 적용
 Podman에서 처리 가능한 단순 depends_on으로 조정
-오프라인 빌드 이미지 태그로 override
+Podman 실행에 필요한 volume override 적용
 ```
+
+Podman에서는 unqualified short image 프롬프트를 피하기 위해 Podman override가
+로컬 이미지 태그(`localhost/...`)를 사용합니다.
 
 Podman에서는 preflight가 필요한 디렉터리와 `init-secrets` 산출물을 먼저 준비한 뒤,
 기동 단계에서는 단순한 compose up 명령만 실행합니다.
@@ -153,7 +162,7 @@ Docker Compose 설정 읽기
 docker-compose.offline.yml 자동 포함
 docker-compose.docker.yml 자동 포함
 필요한 이미지 pull
-broker 이미지 build
+Mosquitto 공식 broker 이미지 pull
 모든 이미지를 하나의 tar.gz 파일로 저장
 특정 서비스 이미지만 부분 archive로 저장
 sha256 체크섬 생성
@@ -850,23 +859,24 @@ docker compose \
 
 ---
 
-## 9.2 왜 `--pull never --no-build`를 사용하나요?
+## 9.2 왜 Docker와 Podman 실행 옵션이 다른가요?
 
 폐쇄망 서버에서는 외부 registry에 접근할 수 없습니다.
 
-따라서 실행 시 Docker가 이미지를 pull하거나 broker를 다시 build하지 않도록 해야 합니다.
+Docker 경로는 실행 시 이미지 pull과 로컬 build를 막기 위해 다음 옵션을 사용합니다.
 
 ```bash
 --pull never
+--no-build
 ```
 
-외부 이미지 pull 방지
+Podman 경로는 `podman-compose 1.5.0` 호환성을 위해 `--pull never`를 사용하지 않습니다.
+대신 `docker-compose.podman.yml`에서 unqualified short image를 `localhost/...`로 고정해
+registry 후보 선택 프롬프트를 피하고, 실행 시에는 다음 옵션만 사용합니다.
 
 ```bash
 --no-build
 ```
-
-로컬 build 방지
 
 이미지는 이미 `load-compose-images.sh`를 통해 로드되어 있어야 합니다.
 
@@ -1194,19 +1204,17 @@ python3 -m json.tool license/license.json
 
 ---
 
-## 17.6 브로커 `/vernemq/data/generated.configs` 권한 오류
+## 17.6 브로커 data/log 권한 오류
 
 예:
 
 ```text
-Error creating /vernemq/data/generated.configs: permission denied
+Error: Permission denied
 ```
 
-`broker/data` bind mount 소유권과 컨테이너 내부 `vernemq` 실행 UID가 맞지 않는 상태입니다.
+`broker/data` 또는 `broker/logs` bind mount를 컨테이너가 읽거나 쓸 수 없는 상태입니다.
 
-Podman에서는 먼저 preflight로 runtime 디렉터리 소유권을 준비합니다. `preflight-podman.sh`는
-브로커 이미지 안의 `vernemq` UID/GID를 확인한 뒤 `podman unshare chown`으로
-`broker/data`, `broker/logs` 소유권을 맞춥니다.
+먼저 preflight로 runtime 디렉터리 생성과 기본 소유권 검사를 수행합니다.
 
 ```bash
 ./scripts/preflight-podman.sh --skip-resource-check
@@ -1219,22 +1227,14 @@ HOST_UID=1000
 HOST_GID=1000
 ```
 
-값을 생략한 경우 브로커 entrypoint는 `/vernemq/data`의 현재 소유자를 기준으로 `vernemq`
-사용자 UID/GID를 맞춥니다.
+Podman rootless 환경에서 계속 실패하면 `broker/data`, `broker/logs`가 디렉터리인지,
+현재 운영 계정으로 접근 가능한지, SELinux label이 `docker-compose.podman.yml`의 `:z`
+mount로 적용되는지 확인합니다.
 
----
-
-## 17.7 브로커 `ulimit -n` 경고
-
-예:
-
-```text
-WARNING: ulimit -n is 1024; 65536 is the recommended minimum.
+```bash
+mkdir -p broker/data broker/logs
+ls -ld broker/data broker/logs
 ```
-
-`broker` 서비스는 Compose 설정에서 `nofile` soft/hard limit을 `65536`으로 지정합니다.
-이 경고가 계속 보이면 서버 또는 Docker daemon의 ulimit 정책이 컨테이너 설정을 제한하는지
-확인해야 합니다.
 
 ---
 

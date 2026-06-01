@@ -33,6 +33,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      broker:
+        condition: service_started
       git:
         condition: service_started
       auth-be:
@@ -89,26 +91,15 @@ services:
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
 
   broker:
-    build:
-      context: ./broker
-    # nodename(VerneMQ@broker) 의 host 부분이 컨테이너 hostname 과 반드시 일치해야
-    # Erlang distribution 이 정상 기동됨. 두 값은 한 쌍으로 관리.
-    hostname: broker
-    user: "0:0"
+    image: eclipse-mosquitto:2.0.22
     restart: unless-stopped
-    environment:
-      DOCKER_VERNEMQ_NODENAME: VerneMQ@broker
-      # 디버깅 시 override.yml 에서 debug 로 올릴 수 있도록 compose 에 노출
-      DOCKER_VERNEMQ_LOG__CONSOLE: both
-      DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: info
     ports:
-      - "1883:1883"      # MQTT
-      - "8080:8080"        # WebSocket
-      - "8081:8081"       # Secured WebSocket
-      - "8888:8888"    # HTTP status port
+      - "1883:1883"    # MQTT
+      - "8080:8080"    # MQTT over WebSocket
     volumes:
-      - ./broker/logs:/vernemq/log
-      - ./broker/data:/vernemq/data
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/data:/mosquitto/data
+      - ./broker/logs:/mosquitto/log
     networks:
       - internal-network
     logging:
