@@ -40,6 +40,7 @@ cd lucy-teamcloud-onprem
 ./scripts/onprem-compose.sh logs tc-be
 ./scripts/onprem-compose.sh logs auth-be
 ./scripts/onprem-compose.sh logs gw
+./scripts/onprem-compose.sh logs broker
 ```
 
 ## 재시작

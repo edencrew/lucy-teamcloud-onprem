@@ -5,6 +5,8 @@ services:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+      broker:
+        condition: service_started
       git:
         condition: service_started
       auth-be:
