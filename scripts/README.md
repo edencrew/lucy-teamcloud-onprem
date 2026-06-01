@@ -979,6 +979,7 @@ archive를 로드한 뒤 새 태그로 컨테이너를 재생성합니다.
 | `.env` | 설치 환경 설정 | 필수 |
 | `.install-state/immutable.env.sha256` | 최초 설정값 변경 감지용 파일 | 권장 |
 | `.install-state/compose-image-tags.override.yml` | 설치 서버에서 사용할 image tag override | 권장 |
+| `.install-state/compose-ports.override.yml` | `EXTERNAL_URL` 기준 생성되는 gw port override | 자동 생성 |
 
 ---
 
@@ -1037,34 +1038,21 @@ rm -rf postgres/data git/data secrets/secrets.env .install-state
 
 # 16. 포트 변경
 
-기본적으로 `gw`는 80, 443 포트를 사용합니다.
-
-이미 해당 포트를 사용 중이라면 `docker-compose.override.yml`을 생성하여 포트를 변경합니다.
-
-예제 파일 복사:
-
-```bash
-cp docker-compose.override.yml.example docker-compose.override.yml
-```
-
-예:
-
-```yaml
-services:
-  gw:
-    ports: !override
-      - "8080:80"
-      - "8443:443"
-```
-
-`!override`를 사용하려면 Docker Compose v2.20 이상이 필요합니다.
-
-포트를 변경한 경우 `.env`의 `EXTERNAL_URL`에도 포트를 반영해야 합니다.
+오프라인 스크립트 실행 시 `gw` host port는 `.env`의 `EXTERNAL_URL`에서 자동으로
+생성됩니다. `.offline.yml`에는 환경변수를 넣지 않고, 스크립트가 숫자가 박힌
+`.install-state/compose-ports.override.yml`을 만들어 마지막 compose override로 붙입니다.
 
 ```env
-EXTERNAL_URL=https://your-domain.com:8443
-BROKER_WS_URL=wss://your-domain.com:8443/mqtt
+EXTERNAL_URL=http://10.0.0.245:18080
+BROKER_WS_URL=ws://10.0.0.245:18080/mqtt
 ```
+
+위 설정은 `18080:80`만 publish합니다. `EXTERNAL_URL=https://10.0.0.245:18443`이면
+`18443:443`만 publish합니다. 포트를 생략하면 `http`는 `80`, `https`는 `443`을 사용합니다.
+rootless Podman에서 낮은 포트가 막혀 있으면 preflight가 실패하므로 `EXTERNAL_URL`에
+외부 포트를 명시하세요.
+
+`docker-compose.override.yml`은 특수한 추가 override가 필요할 때만 사용합니다.
 
 적용 전 검증:
 
@@ -1171,7 +1159,7 @@ Host port is already in use: 80
 
 ```text
 기존 서비스를 중지하거나
-docker-compose.override.yml로 포트를 변경
+.env의 EXTERNAL_URL에 사용할 외부 포트를 명시
 ```
 
 포트 변경 후 다시 검증합니다.

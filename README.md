@@ -330,16 +330,29 @@ docker compose ps -a
 
 ### 포트 충돌
 
-기본 포트(80, 443)가 사용 중인 경우 `docker-compose.override.yml`로 호스트 포트를 변경하세요.
+오프라인 실행 스크립트는 `.env`의 `EXTERNAL_URL` 포트를 기준으로 `gw` 호스트 포트를
+자동 설정합니다. 예를 들어 `EXTERNAL_URL=http://10.0.0.245:18080`이면 `18080:80`,
+`EXTERNAL_URL=https://10.0.0.245:18443`이면 `18443:443`만 publish합니다.
+
+```env
+EXTERNAL_URL=http://10.0.0.245:18080
+BROKER_WS_URL=ws://10.0.0.245:18080/mqtt
+```
+
+포트를 생략하면 표준 포트를 사용합니다. `http`는 `80`, `https`는 `443`입니다. rootless
+Podman 환경에서는 낮은 포트 publish가 실패할 수 있으므로, 필요하면 위 예시처럼 포트를
+명시하세요.
+
+특수한 추가 override가 필요한 경우에만 `docker-compose.override.yml`을 사용합니다.
 원본 `docker-compose.yml`은 직접 수정하지 않으므로 업데이트 시 충돌이 없습니다.
 
-**1. 예제 파일 복사:**
+**예제 파일 복사:**
 
 ```bash
 cp docker-compose.override.yml.example docker-compose.override.yml
 ```
 
-**2. `docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
+**`docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
 
 ```yaml
 services:
@@ -350,24 +363,6 @@ services:
 ```
 
 > `!override` 태그는 원본 `docker-compose.yml`의 `ports` 리스트를 대체합니다. (없으면 두 리스트가 합쳐져 80/443 매핑이 함께 남아 충돌이 발생합니다. Docker Compose v2.20.0+ 필요.)
-
-**3. `.env` 파일의 `EXTERNAL_URL`에도 포트 반영:**
-
-```bash
-# 기본 포트 사용 시
-EXTERNAL_URL=https://your-domain.com
-
-# 8443 포트 사용 시
-EXTERNAL_URL=https://your-domain.com:8443
-```
-
-**4. 적용:**
-
-```bash
-docker compose up -d
-```
-
-`docker compose`는 두 파일을 자동으로 병합합니다 (별도 `-f` 옵션 불필요).
 
 > **주의:** `EXTERNAL_URL`과 실제 포트가 일치하지 않으면 서비스 간 통신 및 리디렉션이 실패합니다.
 

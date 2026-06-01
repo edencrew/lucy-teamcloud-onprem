@@ -152,6 +152,7 @@ AUTO-DETECTED COMPOSE FILE ORDER
   2. docker-compose.offline.yml / docker-compose.offline.yaml if present
   3. docker-compose.podman.yml / docker-compose.podman.yaml if present
   4. docker-compose.override.yml / docker-compose.override.yaml if present
+  5. .install-state/compose-ports.override.yml if generated from EXTERNAL_URL
 
 CHECKS PERFORMED
   - Podman installed and reachable through docker CLI compatibility
@@ -374,6 +375,8 @@ main() {
   cd "$ROOT_DIR"
 
   detect_compose_files
+  prepare_compose_port_override
+  append_compose_port_override
   build_compose_args
 
   log "Project root: $ROOT_DIR"
