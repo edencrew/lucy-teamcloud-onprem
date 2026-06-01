@@ -202,6 +202,7 @@ services:
       # BROKER_WS_URL 기본값은 EXTERNAL_URL 에 /mqtt 를 붙인 형태 (nginx 의 /mqtt/ 리버스 프록시 경유).
       # 필요 시 .env 의 BROKER_WS_URL 로 명시적 override 가능.
       BROKER_WS_URL: ${BROKER_WS_URL}
+      PUBLIC_BROKER_WS_URL: ${PUBLIC_BROKER_WS_URL}
       # BE-to-BE HTTPS 호출(토큰 교환 등) 시 nginx 가 제시하는 인증서를 신뢰하도록
       # nginx/certs/server.crt 를 Node 의 추가 CA 로 등록.
       NODE_EXTRA_CA_CERTS: /certs/server.crt
