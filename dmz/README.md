@@ -62,6 +62,9 @@ INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
 must not include a path. If it is empty, `teamcloud` mode falls back to
 `INTERNAL_MQTT_UPSTREAM` for compatibility.
 
+`DMZ_SERVER_NAME` must be a host or IP only. Do not include a scheme, path, or
+port. Use `DMZ_HTTPS_PORT` for the exposed HTTPS port.
+
 In `teamcloud` mode, use a single canonical URL for both internal and external
 clients. The onprem `.env` should use the canonical DNS URL, not a raw DMZ IP:
 
@@ -70,6 +73,24 @@ EXTERNAL_URL=https://teamcloud.company.com
 BROKER_WS_URL=wss://teamcloud.company.com/mqtt
 PUBLIC_BROKER_WS_URL=wss://teamcloud.company.com/mqtt
 ```
+
+If the DMZ is exposed on a non-standard HTTPS port, include that port in the
+onprem canonical URLs and in `DMZ_HTTPS_PORT`:
+
+```env
+# dmz/.env
+DMZ_SERVER_NAME=teamcloud.company.com
+DMZ_HTTPS_PORT=18443
+
+# onprem .env
+EXTERNAL_URL=https://teamcloud.company.com:18443
+BROKER_WS_URL=wss://teamcloud.company.com:18443/mqtt
+PUBLIC_BROKER_WS_URL=wss://teamcloud.company.com:18443/mqtt
+```
+
+If `.install-state/immutable.env.sha256` already exists on onprem, changing
+these URL values requires rerunning onprem preflight with
+`--allow-immutable-change`.
 
 Internal DNS should resolve `teamcloud.company.com` to the internal onprem
 gateway or to an internally reachable DMZ address. External DNS should resolve
@@ -241,6 +262,8 @@ This mode makes the DMZ proxy the external TeamCloud gateway.
 - The upstream receives `Host: $http_host`, `X-Forwarded-Host`,
   `X-Forwarded-Proto`, and `X-Forwarded-For` so the canonical host and port are
   preserved.
+- HTTP to HTTPS redirects are generated from `DMZ_SERVER_NAME` and
+  `DMZ_HTTPS_PORT`, so non-standard ports such as `18443` are preserved.
 
 ## Network Policy
 

@@ -35,6 +35,7 @@ TeamCloud 전체 접속, auth login, Lucy Studio 연동, Git clone/push까지 DM
 ```env
 DMZ_PROXY_MODE=teamcloud
 DMZ_SERVER_NAME=teamcloud.company.com
+DMZ_HTTPS_PORT=18443
 INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
 ```
 
@@ -42,6 +43,18 @@ INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
 `.env`의 `EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`은 같은
 canonical DNS URL을 사용해야 하고, 내부/외부 DNS가 그 host를 각각 접근 가능한
 주소로 해석해야 합니다.
+
+`DMZ_SERVER_NAME`에는 포트를 붙이지 마세요. 외부 HTTPS 포트가 `18443`이면
+onprem `.env`에는 포트를 포함합니다.
+
+```env
+EXTERNAL_URL=https://teamcloud.company.com:18443
+BROKER_WS_URL=wss://teamcloud.company.com:18443/mqtt
+PUBLIC_BROKER_WS_URL=wss://teamcloud.company.com:18443/mqtt
+```
+
+onprem URL을 바꾸는데 `.install-state/immutable.env.sha256`가 이미 있으면
+onprem preflight에 `--allow-immutable-change`가 필요합니다.
 
 ## 상태 확인
 
@@ -136,5 +149,6 @@ DMZ_RUNTIME=podman ./scripts/dmz-compose.sh ps
 
 - `docker compose down -v`는 실행하지 마세요. compose volume이 삭제될 수 있습니다.
 - `DMZ_ENABLE_TLS=1`이면 `certs/server.crt`, `certs/server.key`가 필요합니다.
+- `DMZ_SERVER_NAME`에는 scheme/path/port를 넣지 마세요.
 - `INTERNAL_MQTT_UPSTREAM`, `INTERNAL_TEAMCLOUD_UPSTREAM`에는 path를 붙이지 마세요.
 - 문제가 나면 먼저 `ps`, `logs`, `/health` 결과를 확인하세요.

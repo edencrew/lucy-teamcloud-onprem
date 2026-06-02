@@ -170,6 +170,32 @@ dmz_teamcloud_upstream() {
   printf '%s' "$upstream"
 }
 
+is_tcp_port() {
+  local port="$1"
+  case "$port" in
+    ""|*[!0-9]*)
+      return 1
+      ;;
+  esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+dmz_https_port() {
+  local port
+  port="$(dmz_env_value DMZ_HTTPS_PORT)"
+  [ -n "$port" ] || port="443"
+  printf '%s' "$port"
+}
+
+validate_dmz_server_name() {
+  local server_name="$1"
+  case "$server_name" in
+    *://*|*/*|*:*)
+      die "DMZ_SERVER_NAME must be a host or IP only, without scheme, path, or port: $server_name"
+      ;;
+  esac
+}
+
 join_by_space_quoted() {
   local out=""
   local item
@@ -341,11 +367,17 @@ dmz_compose_services_with_images() {
 }
 
 require_dmz_runtime_env() {
-  local mode server_name upstream
+  local mode server_name upstream https_port
   mode="$(dmz_proxy_mode)"
   server_name="$(dmz_env_value DMZ_SERVER_NAME)"
 
   [ -n "$server_name" ] || die "DMZ_SERVER_NAME is not set in: $DMZ_ENV_FILE_RESOLVED"
+  validate_dmz_server_name "$server_name"
+
+  if dmz_tls_enabled; then
+    https_port="$(dmz_https_port)"
+    is_tcp_port "$https_port" || die "DMZ_HTTPS_PORT must be a number between 1 and 65535: $https_port"
+  fi
 
   case "$mode" in
     mqtt)
@@ -358,6 +390,7 @@ require_dmz_runtime_env() {
       if [ -z "$(dmz_env_value INTERNAL_TEAMCLOUD_UPSTREAM)" ]; then
         warn "INTERNAL_TEAMCLOUD_UPSTREAM is not set; falling back to INTERNAL_MQTT_UPSTREAM for teamcloud mode."
       fi
+      warn "teamcloud mode requires onprem EXTERNAL_URL, BROKER_WS_URL, and PUBLIC_BROKER_WS_URL to use the same external canonical URL. If the onprem immutable env lock exists, rerun onprem preflight with --allow-immutable-change after updating .env."
       ;;
     *)
       die "DMZ_PROXY_MODE must be mqtt or teamcloud: $mode"

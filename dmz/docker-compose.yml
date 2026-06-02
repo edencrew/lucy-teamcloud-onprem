@@ -11,6 +11,7 @@ services:
       DMZ_SERVER_NAME: ${DMZ_SERVER_NAME}
       DMZ_PROXY_MODE: ${DMZ_PROXY_MODE:-mqtt}
       DMZ_ENABLE_TLS: ${DMZ_ENABLE_TLS:-1}
+      DMZ_HTTPS_PORT: ${DMZ_HTTPS_PORT:-443}
       INTERNAL_MQTT_UPSTREAM: ${INTERNAL_MQTT_UPSTREAM:-}
       INTERNAL_TEAMCLOUD_UPSTREAM: ${INTERNAL_TEAMCLOUD_UPSTREAM:-}
       DMZ_TLS_CERTIFICATE: ${DMZ_TLS_CERTIFICATE:-/etc/nginx/certs/server.crt}
@@ -22,6 +23,35 @@ services:
       - /bin/sh
       - -ec
       - |
+        server_name="$${DMZ_SERVER_NAME:-}"
+        if [ -z "$$server_name" ]; then
+          echo "DMZ_SERVER_NAME is required" >&2
+          exit 1
+        fi
+        case "$$server_name" in
+          *://*|*/*|*:*)
+            echo "DMZ_SERVER_NAME must be a host or IP only, without scheme, path, or port: $$server_name" >&2
+            exit 1
+            ;;
+        esac
+
+        https_port="$${DMZ_HTTPS_PORT:-443}"
+        case "$$https_port" in
+          ""|*[!0-9]*)
+            echo "DMZ_HTTPS_PORT must be a numeric TCP port: $$https_port" >&2
+            exit 1
+            ;;
+        esac
+        if [ "$$https_port" -lt 1 ] || [ "$$https_port" -gt 65535 ]; then
+          echo "DMZ_HTTPS_PORT must be between 1 and 65535: $$https_port" >&2
+          exit 1
+        fi
+        if [ "$$https_port" = "443" ]; then
+          DMZ_HTTPS_REDIRECT_ORIGIN="https://$$server_name"
+        else
+          DMZ_HTTPS_REDIRECT_ORIGIN="https://$$server_name:$$https_port"
+        fi
+
         mode="$${DMZ_PROXY_MODE:-mqtt}"
         case "$$mode" in
           mqtt|teamcloud)
@@ -57,8 +87,8 @@ services:
           fi
         fi
 
-        export DMZ_PROXY_MODE INTERNAL_TEAMCLOUD_UPSTREAM
-        envsubst '$$DMZ_SERVER_NAME $$DMZ_PROXY_MODE $$INTERNAL_MQTT_UPSTREAM $$INTERNAL_TEAMCLOUD_UPSTREAM $$DMZ_TLS_CERTIFICATE $$DMZ_TLS_CERTIFICATE_KEY' \
+        export DMZ_PROXY_MODE INTERNAL_TEAMCLOUD_UPSTREAM DMZ_HTTPS_REDIRECT_ORIGIN
+        envsubst '$$DMZ_SERVER_NAME $$DMZ_PROXY_MODE $$DMZ_HTTPS_REDIRECT_ORIGIN $$INTERNAL_MQTT_UPSTREAM $$INTERNAL_TEAMCLOUD_UPSTREAM $$DMZ_TLS_CERTIFICATE $$DMZ_TLS_CERTIFICATE_KEY' \
           < "$$template" \
           > /etc/nginx/nginx.conf
         nginx -t

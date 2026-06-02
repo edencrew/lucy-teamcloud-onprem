@@ -20,7 +20,7 @@ http {
         }
 
         location / {
-            return 301 https://$host$request_uri;
+            return 301 ${DMZ_HTTPS_REDIRECT_ORIGIN}$request_uri;
         }
     }
 
