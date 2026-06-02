@@ -1,5 +1,6 @@
 services:
   gw:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     ports: !override
       - "18080:80"
       - "18443:443"
@@ -16,4 +17,22 @@ services:
 
   broker:
     image: eclipse-mosquitto:2.0.22
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  git:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  db:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  auth-be:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  auth-fe:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  tc-be:
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+
+  tc-fe:
     platform: ${TARGET_PLATFORM:-linux/amd64}

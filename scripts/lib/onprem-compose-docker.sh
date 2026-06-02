@@ -8,6 +8,7 @@ set -Eeo pipefail
 
 SCRIPT_VERSION="1.1.1"
 IMAGE_OVERRIDE_REL=".install-state/compose-image-tags.override.yml"
+COMPOSE_PORT_OVERRIDE_REL=".install-state/compose-ports.override.yml"
 
 cleanup_tmp_files() {
   if [ -n "${TMP_IMAGE_OVERRIDE_DIR:-}" ] && [ -d "$TMP_IMAGE_OVERRIDE_DIR" ]; then
@@ -19,26 +20,27 @@ trap cleanup_tmp_files EXIT
 
 show_help() {
   cat <<'EOF'
-onprem-compose-docker.sh
+onprem-compose.sh (Docker runtime)
 
 DESCRIPTION
   Safe operational wrapper around Docker Compose for Lucy TeamCloud On-Premise.
 
-  The script auto-detects the same compose files as preflight-docker.sh:
+  The script auto-detects the same compose files as preflight-onprem.sh in Docker mode:
     1. Base compose file
     2. docker-compose.offline.yml / docker-compose.offline.yaml if present
     3. docker-compose.docker.yml / docker-compose.docker.yaml if present
     4. docker-compose.override.yml / docker-compose.override.yaml if present
     5. .install-state/compose-image-tags.override.yml if present
+    6. .install-state/compose-ports.override.yml if generated from EXTERNAL_URL
 
   Data is preserved by default. This script never runs docker compose down -v.
 
 USAGE
-  ./scripts/onprem-compose-docker.sh <COMMAND> [PREFLIGHT_OPTIONS...] [ARGS...]
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh <COMMAND> [PREFLIGHT_OPTIONS...] [ARGS...]
 
 COMMANDS
   check
-      Run scripts/preflight-docker.sh.
+      Run scripts/preflight-onprem.sh in Docker mode.
 
   up [SERVICE...]
       Run preflight, then:
@@ -94,7 +96,7 @@ OPTIONS
       Show script version and exit.
 
 PREFLIGHT OPTIONS
-  The following options are forwarded only to preflight-docker.sh for commands
+  The following options are forwarded only to preflight-onprem.sh for commands
   that run preflight: check, up, restart, recreate, restart-stack,
   replace-images.
 
@@ -117,16 +119,16 @@ ENVIRONMENT VARIABLES
       separated by colon (:).
 
 EXAMPLES
-  ./scripts/onprem-compose-docker.sh check
-  ./scripts/onprem-compose-docker.sh check --skip-resource-check
-  ./scripts/onprem-compose-docker.sh up
-  ./scripts/onprem-compose-docker.sh restart broker
-  ./scripts/onprem-compose-docker.sh recreate broker
-  ./scripts/onprem-compose-docker.sh recreate --skip-resource-check broker
-  ./scripts/onprem-compose-docker.sh restart-stack --skip-resource-check
-  ./scripts/onprem-compose-docker.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
-  ./scripts/onprem-compose-docker.sh image-override
-  ./scripts/onprem-compose-docker.sh down
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh check --skip-resource-check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh up
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh restart broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh recreate broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh recreate --skip-resource-check broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh restart-stack --skip-resource-check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh image-override
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh down
 
 EOF
 }
@@ -149,6 +151,11 @@ require_cmd() {
 }
 
 script_dir() {
+  if [ -n "${ONPREM_SCRIPT_DIR:-}" ]; then
+    printf '%s' "$ONPREM_SCRIPT_DIR"
+    return 0
+  fi
+
   local src="${BASH_SOURCE[0]}"
   while [ -L "$src" ]; do
     local dir
@@ -266,6 +273,186 @@ add_compose_file_unique() {
   local file="$1"
   if ! array_contains "$file" "${COMPOSE_FILE_LIST[@]}"; then
     COMPOSE_FILE_LIST+=("$file")
+  fi
+}
+
+compose_file_list_has_offline() {
+  local file base
+
+  for file in "${COMPOSE_FILE_LIST[@]}"; do
+    base="$(basename "$file")"
+    case "$base" in
+      docker-compose.offline.yaml|docker-compose.offline.yml|compose.offline.yaml|compose.offline.yml)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+get_env_value() {
+  local key="$1"
+  local file="$ROOT_DIR/.env"
+
+  [ -f "$file" ] || return 0
+
+  awk -v key="$key" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      pos = index(line, "=")
+      if (pos == 0) next
+      k = substr(line, 1, pos - 1)
+      v = substr(line, pos + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+      if (k != key) next
+
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+      if (v ~ /^".*"$/) {
+        v = substr(v, 2, length(v) - 2)
+      } else if (v ~ /^\047.*\047$/) {
+        v = substr(v, 2, length(v) - 2)
+      } else {
+        sub(/[[:space:]]+#.*$/, "", v)
+        gsub(/[[:space:]]+$/, "", v)
+      }
+
+      print v
+      exit
+    }
+  ' "$file"
+}
+
+url_scheme() {
+  local url="$1"
+  printf '%s' "$url" | sed -n 's#^\([A-Za-z][A-Za-z0-9+.-]*\)://.*#\1#p'
+}
+
+url_authority() {
+  local url="$1"
+  local no_scheme authority
+
+  no_scheme="$(printf '%s' "$url" | sed 's#^[A-Za-z][A-Za-z0-9+.-]*://##')"
+  authority="$(printf '%s' "$no_scheme" | sed 's|[/?#].*$||' | sed 's#^[^@]*@##')"
+  printf '%s' "$authority"
+}
+
+url_authority_port() {
+  local authority="$1"
+  local candidate
+
+  case "$authority" in
+    \[*\]:*)
+      candidate="$(printf '%s' "$authority" | sed -n 's#^\[[^]]*\]:\([^]]*\)$#\1#p')"
+      ;;
+    \[*\])
+      candidate=""
+      ;;
+    *:*)
+      candidate="${authority##*:}"
+      ;;
+    *)
+      candidate=""
+      ;;
+  esac
+
+  printf '%s' "$candidate"
+}
+
+is_tcp_port() {
+  local port="$1"
+
+  case "$port" in
+    ""|*[!0-9]*)
+      return 1
+      ;;
+  esac
+
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+external_url_gw_port_mapping() {
+  local external_url scheme authority port target_port
+
+  GW_PORT_MAPPING=""
+  external_url="$(get_env_value EXTERNAL_URL)"
+  [ -n "$external_url" ] || return 1
+
+  scheme="$(url_scheme "$external_url")"
+  authority="$(url_authority "$external_url")"
+  port="$(url_authority_port "$authority")"
+
+  case "$authority" in
+    *:)
+      port=":"
+      ;;
+  esac
+
+  case "$scheme" in
+    http)
+      target_port=80
+      [ -n "$port" ] || port=80
+      ;;
+    https)
+      target_port=443
+      [ -n "$port" ] || port=443
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  is_tcp_port "$port" || die "EXTERNAL_URL port must be a number between 1 and 65535: $external_url"
+  GW_PORT_MAPPING="$port:$target_port"
+}
+
+prepare_compose_port_override() {
+  COMPOSE_PORT_OVERRIDE_FILE="$ROOT_DIR/$COMPOSE_PORT_OVERRIDE_REL"
+
+  if ! compose_file_list_has_offline; then
+    return 0
+  fi
+
+  local mapping state_dir tmp_file
+  if external_url_gw_port_mapping; then
+    mapping="$GW_PORT_MAPPING"
+  else
+    mapping=""
+  fi
+
+  if [ -z "$mapping" ]; then
+    rm -f "$COMPOSE_PORT_OVERRIDE_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  state_dir="$(dirname "$COMPOSE_PORT_OVERRIDE_FILE")"
+  mkdir -p "$state_dir" || die "Could not create install state directory: $state_dir"
+
+  tmp_file="${COMPOSE_PORT_OVERRIDE_FILE}.tmp.$$"
+  {
+    printf '%s\n' "# Generated from .env EXTERNAL_URL by preflight/onprem scripts."
+    printf '%s\n' "# Do not edit manually; update EXTERNAL_URL instead."
+    printf '%s\n' "services:"
+    printf '%s\n' "  gw:"
+    printf '%s\n' "    ports: !override"
+    printf '      - "%s"\n' "$mapping"
+  } > "$tmp_file" || die "Could not write compose port override: $tmp_file"
+
+  if [ -f "$COMPOSE_PORT_OVERRIDE_FILE" ] && cmp -s "$tmp_file" "$COMPOSE_PORT_OVERRIDE_FILE"; then
+    rm -f "$tmp_file"
+  else
+    mv "$tmp_file" "$COMPOSE_PORT_OVERRIDE_FILE" || die "Could not save compose port override: $COMPOSE_PORT_OVERRIDE_FILE"
+  fi
+}
+
+append_compose_port_override() {
+  COMPOSE_PORT_OVERRIDE_FILE="$ROOT_DIR/$COMPOSE_PORT_OVERRIDE_REL"
+
+  if [ -f "$COMPOSE_PORT_OVERRIDE_FILE" ]; then
+    add_compose_file_unique "$COMPOSE_PORT_OVERRIDE_FILE"
   fi
 }
 
@@ -420,12 +607,12 @@ require_docker_daemon() {
 }
 
 run_preflight() {
-  local preflight="$ROOT_DIR/scripts/preflight-docker.sh"
+  local preflight="$ROOT_DIR/scripts/lib/preflight-docker.sh"
   local compose_files
   [ -x "$preflight" ] || die "preflight script not found or not executable: $preflight"
   log "Running preflight..."
   compose_files="$(join_by_colon "${COMPOSE_FILE_LIST[@]}")"
-  PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
+  ONPREM_SCRIPT_DIR="$ROOT_DIR/scripts" PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
 }
 
 parse_compose_service_meta() {
@@ -605,7 +792,7 @@ write_image_override_from_manifest() {
   local output_file="$2"
 
   {
-    printf '# Generated by scripts/onprem-compose-docker.sh replace-images.\n'
+    printf '# Generated by scripts/onprem-compose.sh replace-images (Docker runtime).\n'
     printf '# Regenerate with replace-images or remove with clear-image-override.\n'
     printf 'services:\n'
     awk -F '\t' '
@@ -791,6 +978,8 @@ init_context() {
 
   detect_compose_files
   append_installed_image_override
+  prepare_compose_port_override
+  append_compose_port_override
   build_compose_args
 }
 

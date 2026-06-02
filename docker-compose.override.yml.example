@@ -1,4 +1,6 @@
 # 호스트 환경에 맞게 설정을 덮어쓰는 예제 파일입니다.
+# 오프라인 스크립트의 gw 포트는 기본적으로 .env EXTERNAL_URL에서 자동 생성됩니다.
+# 이 파일은 추가 compose override가 필요한 특수한 경우에만 사용하세요.
 # 사용법:
 #   1. 이 파일을 docker-compose.override.yml 로 복사
 #        cp docker-compose.override.yml.example docker-compose.override.yml

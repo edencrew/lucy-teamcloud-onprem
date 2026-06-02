@@ -124,7 +124,7 @@ docker compose restart gw
 ### 4.1 Docker Compose 실행
 
 ```bash
-./scripts/preflight-docker.sh --compose-up
+ONPREM_RUNTIME=docker ./scripts/preflight-onprem.sh --compose-up
 ```
 
 ### 4.2 Podman Compose 실행
@@ -135,12 +135,12 @@ Podman preflight는 필요한 디렉터리와 `init-secrets` 산출물을 먼저
 기동 단계에서는 단순한 compose up 명령만 실행합니다.
 
 ```bash
-./scripts/preflight-podman.sh --compose-up
+ONPREM_RUNTIME=podman ./scripts/preflight-onprem.sh --compose-up
 ```
 
 `scripts/preflight-onprem.sh`와 `scripts/onprem-compose.sh`는 Docker/Podman을
-자동 감지하는 호환 wrapper입니다. 운영 문서나 설치 절차에는 가능하면
-`preflight-docker.sh` 또는 `preflight-podman.sh`를 명시하세요.
+자동 감지하는 실행 wrapper입니다. 런타임을 고정해야 하는 운영 절차에서는
+`ONPREM_RUNTIME=docker` 또는 `ONPREM_RUNTIME=podman`을 함께 지정하세요.
 
 ### 4.3 로그 확인
 
@@ -159,104 +159,6 @@ docker compose ps
 ```
 
 > `init-secrets` 컨테이너는 첫 부팅 시 인스턴스별 시크릿(`secrets/secrets.env`)을 생성하고 종료되는 일회성 컨테이너입니다. 목록에 `Exited (0)` 상태로 남아 있는 것은 정상이며, 리소스를 점유하지 않습니다.
-
-### 4.4 DMZ 모바일 MQTT 프록시
-
-외부 모바일 디바이스가 폐쇄망 내부 broker에 직접 접근할 수 없는 경우,
-`dmz/` standalone compose를 DMZ 서버에 배포해 MQTT-over-WebSocket만 프록시할 수 있습니다.
-
-```text
-Mobile App
-  -> wss://<dmz-domain>/mqtt
-  -> 또는 ws://<dmz-ip>/mqtt
-  -> DMZ nginx
-  -> https://<internal-teamcloud>/mqtt
-  -> internal broker
-```
-
-DMZ 서버에서:
-
-```bash
-cd dmz
-cp .env.example .env
-```
-
-`dmz/.env`에서 외부 도메인과 내부 TeamCloud nginx origin을 설정합니다.
-`INTERNAL_MQTT_UPSTREAM`은 DMZ 서버에서 접근 가능해야 하며, `/mqtt` path를 붙이지
-않습니다.
-
-```env
-DMZ_SERVER_NAME=mqtt.company.com
-DMZ_ENABLE_TLS=1
-INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
-```
-
-DMZ 공개 TLS 인증서를 배치합니다.
-
-```text
-dmz/certs/server.crt
-dmz/certs/server.key
-```
-
-도메인/인증서 없이 IP와 plain WebSocket만 사용할 경우에는 다음처럼 설정합니다.
-
-```env
-DMZ_SERVER_NAME=203.0.113.10
-DMZ_ENABLE_TLS=0
-INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
-```
-
-이 경우 모바일 접속 주소는 다음과 같습니다.
-
-```text
-ws://203.0.113.10/mqtt
-```
-
-WSS 모드로 프록시를 실행합니다.
-
-```bash
-docker compose --env-file .env up -d
-```
-
-plain WS/IP 모드로 실행할 때는 443을 열지 않는 override 파일을 함께 사용합니다.
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ws.yml --env-file .env up -d
-```
-
-`dmz/scripts/` 아래 운영 스크립트는 parent on-prem `scripts/`에 의존하지 않는
-standalone 스크립트입니다. DMZ 서버에서는 다음 흐름을 사용할 수 있습니다.
-
-```bash
-cd dmz
-./scripts/download-compose-images.sh      # 인터넷 가능 환경에서 dmz/images 생성
-./scripts/load-images-and-up.sh           # 폐쇄망 DMZ 서버에서 load 후 실행
-./scripts/restart-after-env-change.sh     # dmz/.env 변경 후 재생성
-```
-
-이 스크립트들은 `DMZ_ENABLE_TLS=0`이면 `docker-compose.ws.yml`을 자동 포함합니다.
-
-모바일 앱이나 API가 broker URL을 내부 설정에서 받아간다면 내부 on-prem `.env`의
-`BROKER_WS_URL`을 DMZ 주소로 설정합니다.
-
-```env
-BROKER_WS_URL=wss://mqtt.company.com/mqtt
-```
-
-plain WS/IP 모드:
-
-```env
-BROKER_WS_URL=ws://203.0.113.10/mqtt
-```
-
-방화벽은 WSS 모드에서는 외부에서 DMZ `443`만 열고, plain WS 모드에서는 DMZ `80`만
-엽니다. DMZ에서 내부 TeamCloud nginx `443`만 접근하게 제한하세요. 내부 broker의
-`1883`, `8080`은 인터넷에 직접 노출하지 않습니다.
-
-> **보안 주의:** DMZ proxy는 인증/ACL을 추가하지 않습니다. 현재 broker 설정은
-> anonymous 접속을 허용하므로, 운영 환경에서 외부 모바일을 받기 전 broker 인증과
-> topic ACL 강화가 별도로 필요합니다. `ws://` plain 모드는 TLS 없이 통신하므로 공개
-> 운영망이 아니라 통제된 사설망 또는 임시 검증 용도로만 사용하세요.
 
 ## 5. 서비스 종료
 
@@ -330,16 +232,29 @@ docker compose ps -a
 
 ### 포트 충돌
 
-기본 포트(80, 443)가 사용 중인 경우 `docker-compose.override.yml`로 호스트 포트를 변경하세요.
+오프라인 실행 스크립트는 `.env`의 `EXTERNAL_URL` 포트를 기준으로 `gw` 호스트 포트를
+자동 설정합니다. 예를 들어 `EXTERNAL_URL=http://10.0.0.245:18080`이면 `18080:80`,
+`EXTERNAL_URL=https://10.0.0.245:18443`이면 `18443:443`만 publish합니다.
+
+```env
+EXTERNAL_URL=http://10.0.0.245:18080
+BROKER_WS_URL=ws://10.0.0.245:18080/mqtt
+```
+
+포트를 생략하면 표준 포트를 사용합니다. `http`는 `80`, `https`는 `443`입니다. rootless
+Podman 환경에서는 낮은 포트 publish가 실패할 수 있으므로, 필요하면 위 예시처럼 포트를
+명시하세요.
+
+특수한 추가 override가 필요한 경우에만 `docker-compose.override.yml`을 사용합니다.
 원본 `docker-compose.yml`은 직접 수정하지 않으므로 업데이트 시 충돌이 없습니다.
 
-**1. 예제 파일 복사:**
+**예제 파일 복사:**
 
 ```bash
 cp docker-compose.override.yml.example docker-compose.override.yml
 ```
 
-**2. `docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
+**`docker-compose.override.yml`에서 호스트 포트 값 수정 (예: 8080/8443):**
 
 ```yaml
 services:
@@ -350,24 +265,6 @@ services:
 ```
 
 > `!override` 태그는 원본 `docker-compose.yml`의 `ports` 리스트를 대체합니다. (없으면 두 리스트가 합쳐져 80/443 매핑이 함께 남아 충돌이 발생합니다. Docker Compose v2.20.0+ 필요.)
-
-**3. `.env` 파일의 `EXTERNAL_URL`에도 포트 반영:**
-
-```bash
-# 기본 포트 사용 시
-EXTERNAL_URL=https://your-domain.com
-
-# 8443 포트 사용 시
-EXTERNAL_URL=https://your-domain.com:8443
-```
-
-**4. 적용:**
-
-```bash
-docker compose up -d
-```
-
-`docker compose`는 두 파일을 자동으로 병합합니다 (별도 `-f` 옵션 불필요).
 
 > **주의:** `EXTERNAL_URL`과 실제 포트가 일치하지 않으면 서비스 간 통신 및 리디렉션이 실패합니다.
 

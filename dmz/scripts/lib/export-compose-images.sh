@@ -8,6 +8,7 @@ set -Eeo pipefail
 SCRIPT_VERSION="2.0.0"
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+DMZ_SCRIPT_DIR="${DMZ_SCRIPT_DIR:-$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)}"
 # shellcheck source=dmz-common.sh
 . "$SCRIPT_DIR/dmz-common.sh"
 
@@ -27,17 +28,17 @@ trap cleanup EXIT
 
 show_help() {
   cat <<'EOF'
-download-compose-images.sh
+export-compose-images.sh
 
 DESCRIPTION
-  Download Docker images for the standalone DMZ MQTT WebSocket proxy and
-  package them into an offline archive.
+  Export Docker images for the standalone DMZ MQTT WebSocket proxy into an
+  offline archive.
 
   This script is fully self-contained under dmz/. It does not call the parent
   on-premise scripts.
 
 USAGE
-  ./scripts/download-compose-images.sh [OPTIONS]
+  ./scripts/export-compose-images.sh [OPTIONS]
 
 OPTIONS
   -h, --help
@@ -70,13 +71,13 @@ ENVIRONMENT VARIABLES
 
 EXAMPLES
   Package the DMZ nginx image:
-    ./scripts/download-compose-images.sh
+    ./scripts/export-compose-images.sh
 
   Package for ARM64:
-    TARGET_PLATFORM=linux/arm64 ./scripts/download-compose-images.sh
+    TARGET_PLATFORM=linux/arm64 ./scripts/export-compose-images.sh
 
   Write to a custom output path:
-    OUTPUT_DIR=/tmp/dmz-images ./scripts/download-compose-images.sh
+    OUTPUT_DIR=/tmp/dmz-images ./scripts/export-compose-images.sh
 
 OUTPUT FILES
   <base>.tar.gz
@@ -163,7 +164,7 @@ main() {
       exit 0
       ;;
     -v|--version)
-      echo "download-compose-images.sh $SCRIPT_VERSION"
+      echo "export-compose-images.sh $SCRIPT_VERSION"
       exit 0
       ;;
     "")

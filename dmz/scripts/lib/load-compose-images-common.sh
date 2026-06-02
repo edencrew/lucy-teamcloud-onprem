@@ -3,7 +3,7 @@
 # Shared implementation for Docker/Podman DMZ image loading scripts.
 
 SCRIPT_VERSION="${SCRIPT_VERSION:-2.0.0}"
-SCRIPT_NAME="${SCRIPT_NAME:-load-images-and-up.sh}"
+SCRIPT_NAME="${SCRIPT_NAME:-load-compose-images.sh}"
 
 SKIP_CHECKSUM=0
 SKIP_GZIP_TEST=0
@@ -14,8 +14,7 @@ show_help() {
 $SCRIPT_NAME
 
 DESCRIPTION
-  Verify/load a DMZ image archive and start the standalone DMZ MQTT WebSocket
-  proxy stack.
+  Verify and load a DMZ image archive on an offline / air-gapped server.
 
   This script is fully self-contained under dmz/. It does not call the parent
   on-premise scripts.
@@ -44,17 +43,18 @@ ENVIRONMENT VARIABLES
       Explicit DMZ root path. Defaults to the parent directory of dmz/scripts.
 
   DMZ_ENV_FILE
-      Explicit env file. Defaults to dmz/.env. Runtime commands require .env.
+      Explicit env file. Defaults to dmz/.env, or dmz/.env.example when .env
+      does not exist because image loading only needs DMZ root context.
 
   IMAGES_DIR
       Directory to search when ARCHIVE_PATH is omitted. Default:
         <dmz-root>/images
 
 EXAMPLES
-  Load the only archive under ./images and start DMZ:
+  Load the only archive under ./images:
     ./scripts/$SCRIPT_NAME
 
-  Load a specific archive and start DMZ:
+  Load a specific archive:
     ./scripts/$SCRIPT_NAME ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
 
   Skip checksum verification:
@@ -208,11 +208,10 @@ verify_loaded_images() {
   done < "$image_list_file"
 }
 
-load_images_and_up_main() {
+load_compose_images_main() {
   parse_args "$@"
-  init_dmz_context require-env
+  init_dmz_context allow-example
   require_dmz_selected_runtime
-  require_dmz_runtime_env
   resolve_archive_path
 
   log "DMZ root: $DMZ_ROOT_DIR"
@@ -228,9 +227,16 @@ load_images_and_up_main() {
   docker load -i "$ARCHIVE_PATH"
   verify_loaded_images "$ARCHIVE_PATH"
 
-  log "Validating DMZ compose config..."
-  dmz_compose config --quiet
+  log "DMZ image load complete."
 
-  log "Starting DMZ proxy..."
-  dmz_compose_up
+  cat <<EOF
+
+Next step:
+  cd "$DMZ_ROOT_DIR"
+  ./scripts/preflight-dmz.sh --compose-up
+
+Or run:
+  ./scripts/dmz-compose.sh up
+
+EOF
 }

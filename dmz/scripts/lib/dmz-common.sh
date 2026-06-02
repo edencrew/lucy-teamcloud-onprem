@@ -22,6 +22,11 @@ require_cmd() {
 }
 
 script_dir() {
+  if [ -n "${DMZ_SCRIPT_DIR:-}" ]; then
+    printf '%s' "$DMZ_SCRIPT_DIR"
+    return 0
+  fi
+
   local src="${BASH_SOURCE[0]}"
   while [ -L "$src" ]; do
     local dir
@@ -32,7 +37,16 @@ script_dir() {
       *) src="$dir/$src" ;;
     esac
   done
-  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+  local dir
+  dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  case "$(basename "$dir")" in
+    lib)
+      cd -P "$dir/.." >/dev/null 2>&1 && pwd
+      ;;
+    *)
+      printf '%s' "$dir"
+      ;;
+  esac
 }
 
 resolve_dmz_root() {
