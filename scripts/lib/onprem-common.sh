@@ -80,12 +80,12 @@ onprem_exec_target_script() {
 
   local sdir script
   sdir="$(onprem_script_dir)"
-  script="$sdir/${kind}-${target}.sh"
+  script="$sdir/lib/${kind}-${target}.sh"
 
   if [ ! -x "$script" ]; then
     printf '\033[1;31m[ERROR]\033[0m target script is not executable: %s\n' "$script" >&2
     exit 1
   fi
 
-  exec "$script" "$@"
+  ONPREM_SCRIPT_DIR="$sdir" exec "$script" "$@"
 }

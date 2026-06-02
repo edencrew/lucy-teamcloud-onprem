@@ -29,13 +29,15 @@ lucy-teamcloud-onprem/
     export-compose-images.sh
     load-compose-images.sh
     preflight-onprem.sh
-    preflight-docker.sh
-    preflight-podman.sh
     onprem-compose.sh
-    onprem-compose-docker.sh
-    onprem-compose-podman.sh
-    init-secrets.sh
     lib/
+      export-compose-images.sh
+      load-compose-images.sh
+      preflight-docker.sh
+      preflight-podman.sh
+      onprem-compose-docker.sh
+      onprem-compose-podman.sh
+      init-secrets.sh
       onprem-common.sh
       preflight-common.sh
 
@@ -107,7 +109,7 @@ docker-compose.yml
 + docker-compose.offline.yml
 ```
 
-`export-compose-images.sh`와 Docker용 `preflight-docker.sh`는 이 파일이 있으면 자동으로 포함합니다.
+`export-compose-images.sh`와 `preflight-onprem.sh`는 이 파일이 있으면 자동으로 포함합니다.
 
 ---
 
@@ -139,14 +141,15 @@ Podman에서 처리 가능한 단순 depends_on으로 조정
 Podman 실행에 필요한 volume override 적용
 ```
 
-Podman에서는 unqualified short image 프롬프트를 피하기 위해 Podman override가
-로컬 이미지 태그(`localhost/...`)를 사용합니다.
+Podman 실행 스크립트는 폐쇄망 실행 중 registry 선택 프롬프트가 뜨지 않도록
+compose up 시 `--pull never --no-build`를 적용합니다. 로컬 이미지가 없으면
+외부 registry를 찾지 않고 실패합니다.
 
 Podman에서는 preflight가 필요한 디렉터리와 `init-secrets` 산출물을 먼저 준비한 뒤,
 기동 단계에서는 단순한 compose up 명령만 실행합니다.
 
 ```bash
-./scripts/preflight-podman.sh --compose-up
+ONPREM_RUNTIME=podman ./scripts/preflight-onprem.sh --compose-up
 ```
 
 ---
@@ -187,7 +190,7 @@ docker load 실행
 
 ---
 
-## 2.7 `scripts/preflight-docker.sh` / `scripts/preflight-podman.sh`
+## 2.7 `scripts/preflight-onprem.sh`
 
 폐쇄망 서버에서 compose up 전에 실행하는 사전 점검 스크립트입니다.
 
@@ -207,24 +210,25 @@ docker compose config 검증
 최초 실행 후 변경하면 안 되는 값 검증
 ```
 
-Docker 환경:
+자동 감지:
 
 ```bash
-./scripts/preflight-docker.sh --compose-up
+./scripts/preflight-onprem.sh --compose-up
 ```
 
-Podman 환경:
+런타임 고정:
 
 ```bash
-./scripts/preflight-podman.sh --compose-up
+ONPREM_RUNTIME=docker ./scripts/preflight-onprem.sh --compose-up
+ONPREM_RUNTIME=podman ./scripts/preflight-onprem.sh --compose-up
 ```
 
-`preflight-onprem.sh`는 Docker/Podman을 자동 감지해 위 전용 스크립트 중 하나로
-위임하는 호환 wrapper입니다.
+내부 구현 파일은 `scripts/lib/preflight-docker.sh`와
+`scripts/lib/preflight-podman.sh`에 있으며, 사용자는 wrapper만 실행합니다.
 
 ---
 
-## 2.8 `scripts/onprem-compose-docker.sh` / `scripts/onprem-compose-podman.sh`
+## 2.8 `scripts/onprem-compose.sh`
 
 설치 후 운영자가 사용하는 Compose 래퍼 스크립트입니다.
 
@@ -243,28 +247,26 @@ Podman 환경:
 예:
 
 ```bash
-./scripts/onprem-compose-docker.sh up
-./scripts/onprem-compose-docker.sh restart broker
-./scripts/onprem-compose-docker.sh recreate broker
-./scripts/onprem-compose-docker.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
-./scripts/onprem-compose-docker.sh down
+./scripts/onprem-compose.sh up
+./scripts/onprem-compose.sh restart broker
+./scripts/onprem-compose.sh recreate broker
+./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+./scripts/onprem-compose.sh down
 ```
 
-Podman 환경에서는 다음 스크립트를 사용합니다.
+런타임을 고정해야 하면 wrapper에 환경변수를 붙입니다.
 
 ```bash
-./scripts/onprem-compose-podman.sh up
-./scripts/onprem-compose-podman.sh restart broker
-./scripts/onprem-compose-podman.sh recreate broker
-./scripts/onprem-compose-podman.sh down
+ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh up
+ONPREM_RUNTIME=podman ./scripts/onprem-compose.sh up
 ```
 
-`onprem-compose.sh`는 Docker/Podman을 자동 감지해 위 전용 스크립트 중 하나로
-위임하는 호환 wrapper입니다.
+내부 구현 파일은 `scripts/lib/onprem-compose-docker.sh`와
+`scripts/lib/onprem-compose-podman.sh`에 있으며, 사용자는 wrapper만 실행합니다.
 
 ---
 
-## 2.9 `scripts/init-secrets.sh`
+## 2.9 `scripts/lib/init-secrets.sh`
 
 사용자가 직접 실행하는 스크립트가 아닙니다.
 
@@ -374,7 +376,8 @@ scripts/
   load-compose-images.sh
   preflight-onprem.sh
   onprem-compose.sh
-  init-secrets.sh
+  lib/
+    init-secrets.sh
 
 images/
   *.tar.gz
@@ -523,36 +526,6 @@ preflight resource check를 건너뛰고 특정 서비스 컨테이너를 재생
 ./scripts/onprem-compose.sh ps
 ./scripts/onprem-compose.sh logs broker
 ./scripts/onprem-compose.sh images
-```
-
----
-
-## 4.6 DMZ 운영 유틸 스크립트
-
-DMZ 서버에서는 `dmz/` 폴더 안에서 onprem과 같은 방식의 wrapper를 사용합니다.
-
-```bash
-cd dmz
-./scripts/dmz-compose.sh up
-./scripts/dmz-compose.sh ps
-./scripts/dmz-compose.sh logs
-./scripts/dmz-compose.sh recreate
-./scripts/dmz-compose.sh down
-```
-
-처음 설치하거나 DMZ 이미지 압축 파일을 새로 받은 경우에는 먼저 이미지를 로드하고
-기동합니다.
-
-```bash
-cd dmz
-./scripts/load-images-and-up.sh
-```
-
-명시적으로 런타임을 고정해야 하면 다음 스크립트를 사용합니다.
-
-```bash
-./scripts/dmz-compose-docker.sh up
-./scripts/dmz-compose-podman.sh up
 ```
 
 ---
@@ -811,7 +784,7 @@ cp /path/to/your/private.key nginx/certs/server.key
 docker compose restart gw
 ```
 
-`init-secrets.sh`는 인증서 파일이 이미 있으면 덮어쓰지 않습니다.
+`scripts/lib/init-secrets.sh`는 인증서 파일이 이미 있으면 덮어쓰지 않습니다.
 
 ---
 
@@ -1205,7 +1178,7 @@ Error: Permission denied
 먼저 preflight로 runtime 디렉터리 생성과 기본 소유권 검사를 수행합니다.
 
 ```bash
-./scripts/preflight-podman.sh --skip-resource-check
+ONPREM_RUNTIME=podman ./scripts/preflight-onprem.sh --skip-resource-check
 ```
 
 운영 계정의 UID/GID를 명시하려면 `.env`에 다음 값을 설정합니다.

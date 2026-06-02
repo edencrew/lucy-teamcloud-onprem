@@ -63,6 +63,8 @@ The scripts under `dmz/scripts/` are standalone and do not call the parent
 on-premise `scripts/` directory. For daily operation, use
 `dmz-compose.sh <command>` in the same style as the on-premise
 `onprem-compose.sh <command>` wrapper.
+See `scripts/OPERATOR_QUICK_GUIDE.md` for the short operator guide and
+`scripts/README.md` for full script-focused usage.
 
 Auto-detect Docker or Podman:
 
@@ -74,11 +76,11 @@ Auto-detect Docker or Podman:
 ./scripts/dmz-compose.sh down
 ```
 
-Runtime-specific commands are also available:
+To pin a runtime explicitly, set `DMZ_RUNTIME` on the same wrapper:
 
 ```bash
-./scripts/dmz-compose-docker.sh up
-./scripts/dmz-compose-podman.sh up
+DMZ_RUNTIME=docker ./scripts/dmz-compose.sh up
+DMZ_RUNTIME=podman ./scripts/dmz-compose.sh up
 ```
 
 The wrapper selects the TLS/plain-WS compose override from `DMZ_ENABLE_TLS`.
@@ -115,7 +117,7 @@ On an internet-connected machine:
 
 ```bash
 cd dmz
-./scripts/download-compose-images.sh
+./scripts/export-compose-images.sh
 ```
 
 This creates:
@@ -129,29 +131,19 @@ dmz/images/lucy-teamcloud-dmz-images-linux-amd64.explicit-images.txt
 dmz/images/lucy-teamcloud-dmz-images-linux-amd64.services.txt
 ```
 
-Copy `dmz/` and `dmz/images/` to the DMZ server, create `dmz/.env`, then run
-one of the runtime-specific scripts.
-
-Docker:
+Copy `dmz/` and `dmz/images/` to the DMZ server, create `dmz/.env`, then load
+images and start the proxy through preflight.
 
 ```bash
 cd dmz
-./scripts/load-images-and-up-docker.sh
-```
-
-Podman:
-
-```bash
-cd dmz
-./scripts/load-images-and-up-podman.sh
+./scripts/load-compose-images.sh
+./scripts/preflight-dmz.sh --compose-up
 ```
 
 Or specify the archive explicitly:
 
 ```bash
-./scripts/load-images-and-up-docker.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
-# or:
-./scripts/load-images-and-up-podman.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
+./scripts/load-compose-images.sh ./images/lucy-teamcloud-dmz-images-linux-amd64.tar.gz
 ```
 
 After changing `dmz/.env`, apply the change with:
@@ -161,9 +153,7 @@ After changing `dmz/.env`, apply the change with:
 ```
 
 The recreate command validates the new env and compose config before replacing
-the running DMZ proxy. Compatibility wrappers are also available:
-`./scripts/load-images-and-up.sh`, `./scripts/restart-after-env-change.sh`,
-and `./scripts/down.sh`.
+the running DMZ proxy.
 
 Stop the DMZ proxy while preserving files:
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -Eeo pipefail
 
-# onprem-compose-podman.sh
+# onprem-compose-docker.sh
 #
 # Operational wrapper for Lucy TeamCloud On-Premise Docker Compose commands.
 # It preserves data by default and delegates readiness checks to preflight.
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.1"
 IMAGE_OVERRIDE_REL=".install-state/compose-image-tags.override.yml"
 COMPOSE_PORT_OVERRIDE_REL=".install-state/compose-ports.override.yml"
 
@@ -20,15 +20,15 @@ trap cleanup_tmp_files EXIT
 
 show_help() {
   cat <<'EOF'
-onprem-compose-podman.sh
+onprem-compose.sh (Docker runtime)
 
 DESCRIPTION
-  Safe operational wrapper around Podman Compose for Lucy TeamCloud On-Premise.
+  Safe operational wrapper around Docker Compose for Lucy TeamCloud On-Premise.
 
-  The script auto-detects Podman compose files:
+  The script auto-detects the same compose files as preflight-onprem.sh in Docker mode:
     1. Base compose file
     2. docker-compose.offline.yml / docker-compose.offline.yaml if present
-    3. docker-compose.podman.yml / docker-compose.podman.yaml if present
+    3. docker-compose.docker.yml / docker-compose.docker.yaml if present
     4. docker-compose.override.yml / docker-compose.override.yaml if present
     5. .install-state/compose-image-tags.override.yml if present
     6. .install-state/compose-ports.override.yml if generated from EXTERNAL_URL
@@ -36,15 +36,15 @@ DESCRIPTION
   Data is preserved by default. This script never runs docker compose down -v.
 
 USAGE
-  ./scripts/onprem-compose-podman.sh <COMMAND> [PREFLIGHT_OPTIONS...] [ARGS...]
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh <COMMAND> [PREFLIGHT_OPTIONS...] [ARGS...]
 
 COMMANDS
   check
-      Run scripts/preflight-podman.sh.
+      Run scripts/preflight-onprem.sh in Docker mode.
 
   up [SERVICE...]
       Run preflight, then:
-        docker compose up -d --no-build [SERVICE...]
+        docker compose up -d --pull never --no-build [SERVICE...]
 
   down
       Stop and remove compose containers while preserving bind mount data and
@@ -57,10 +57,10 @@ COMMANDS
 
   recreate [SERVICE...]
       Run preflight, then force-recreate containers without pulling/building:
-        docker compose up -d --no-build --force-recreate [SERVICE...]
+        docker compose up -d --pull never --no-build --force-recreate [SERVICE...]
 
   restart-stack
-      Run docker compose down, then preflight and compose up.
+      Run docker compose down, then preflight, then compose up.
 
   replace-images ARCHIVE [SERVICE...]
       Verify ARCHIVE's sibling *.images.txt and *.services.txt, generate a
@@ -96,7 +96,7 @@ OPTIONS
       Show script version and exit.
 
 PREFLIGHT OPTIONS
-  The following options are forwarded only to preflight-podman.sh for commands
+  The following options are forwarded only to preflight-onprem.sh for commands
   that run preflight: check, up, restart, recreate, restart-stack,
   replace-images.
 
@@ -119,16 +119,16 @@ ENVIRONMENT VARIABLES
       separated by colon (:).
 
 EXAMPLES
-  ./scripts/onprem-compose-podman.sh check
-  ./scripts/onprem-compose-podman.sh check --skip-resource-check
-  ./scripts/onprem-compose-podman.sh up
-  ./scripts/onprem-compose-podman.sh restart broker
-  ./scripts/onprem-compose-podman.sh recreate broker
-  ./scripts/onprem-compose-podman.sh recreate --skip-resource-check broker
-  ./scripts/onprem-compose-podman.sh restart-stack --skip-resource-check
-  ./scripts/onprem-compose-podman.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
-  ./scripts/onprem-compose-podman.sh image-override
-  ./scripts/onprem-compose-podman.sh down
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh check --skip-resource-check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh up
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh restart broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh recreate broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh recreate --skip-resource-check broker
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh restart-stack --skip-resource-check
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh replace-images ./images/lucy-teamcloud-onprem-images-linux-amd64.tar.gz
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh image-override
+  ONPREM_RUNTIME=docker ./scripts/onprem-compose.sh down
 
 EOF
 }
@@ -151,6 +151,11 @@ require_cmd() {
 }
 
 script_dir() {
+  if [ -n "${ONPREM_SCRIPT_DIR:-}" ]; then
+    printf '%s' "$ONPREM_SCRIPT_DIR"
+    return 0
+  fi
+
   local src="${BASH_SOURCE[0]}"
   while [ -L "$src" ]; do
     local dir
@@ -495,7 +500,7 @@ EOF_COMPOSE_FILES
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
       done
-      for f in docker-compose.podman.yaml docker-compose.podman.yml; do
+      for f in docker-compose.docker.yaml docker-compose.docker.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
@@ -512,7 +517,7 @@ EOF_COMPOSE_FILES
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
       done
-      for f in compose.podman.yaml compose.podman.yml; do
+      for f in compose.docker.yaml compose.docker.yml; do
         if [ -f "$ROOT_DIR/$f" ]; then
           add_compose_file_unique "$ROOT_DIR/$f"
         fi
@@ -552,11 +557,6 @@ append_installed_image_override() {
 
 build_compose_args() {
   COMPOSE_ARGS=()
-
-  if [ -f "$ROOT_DIR/.env" ]; then
-    COMPOSE_ARGS+=("--env-file" "$ROOT_DIR/.env")
-  fi
-
   local f
   for f in "${COMPOSE_FILE_LIST[@]}"; do
     COMPOSE_ARGS+=("-f" "$f")
@@ -598,22 +598,21 @@ archive_basename_without_extensions() {
 
 require_compose_cli() {
   require_cmd docker
-  require_cmd podman
-  docker compose version >/dev/null 2>&1 || die "podman-compose provider is not available. Check: docker compose version"
+  docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is not available. Check: docker compose version"
 }
 
 require_docker_daemon() {
   require_compose_cli
-  docker info >/dev/null 2>&1 || die "Podman is not running or current user cannot access it through docker CLI."
+  docker info >/dev/null 2>&1 || die "Docker daemon is not running or current user cannot access Docker."
 }
 
 run_preflight() {
-  local preflight="$ROOT_DIR/scripts/preflight-podman.sh"
+  local preflight="$ROOT_DIR/scripts/lib/preflight-docker.sh"
   local compose_files
   [ -x "$preflight" ] || die "preflight script not found or not executable: $preflight"
   log "Running preflight..."
   compose_files="$(join_by_colon "${COMPOSE_FILE_LIST[@]}")"
-  PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
+  ONPREM_SCRIPT_DIR="$ROOT_DIR/scripts" PROJECT_ROOT="$ROOT_DIR" COMPOSE_FILES="$compose_files" "$preflight" "${PREFLIGHT_ARGS[@]}"
 }
 
 parse_compose_service_meta() {
@@ -793,7 +792,7 @@ write_image_override_from_manifest() {
   local output_file="$2"
 
   {
-    printf '# Generated by scripts/onprem-compose-podman.sh replace-images.\n'
+    printf '# Generated by scripts/onprem-compose.sh replace-images (Docker runtime).\n'
     printf '# Regenerate with replace-images or remove with clear-image-override.\n'
     printf 'services:\n'
     awk -F '\t' '
@@ -899,7 +898,7 @@ cmd_check() {
 cmd_up() {
   run_preflight
   log "Starting services..."
-  compose up -d --no-build "$@"
+  compose up -d --pull never --no-build "$@"
 }
 
 cmd_down() {
@@ -916,7 +915,7 @@ cmd_restart() {
 cmd_recreate() {
   run_preflight
   log "Recreating services..."
-  compose up -d --no-build --force-recreate "$@"
+  compose up -d --pull never --no-build --force-recreate "$@"
 }
 
 cmd_restart_stack() {
@@ -924,7 +923,7 @@ cmd_restart_stack() {
   compose down
   run_preflight
   log "Starting stack..."
-  compose up -d --no-build
+  compose up -d --pull never --no-build
 }
 
 cmd_replace_images() {
@@ -944,7 +943,7 @@ cmd_replace_images() {
   persist_verified_image_override "$VERIFIED_IMAGE_OVERRIDE_FILE"
   run_preflight
   log "Recreating services with loaded images..."
-  compose up -d --no-build --force-recreate "$@"
+  compose up -d --pull never --no-build --force-recreate "$@"
 }
 
 cmd_ps() {
@@ -1009,7 +1008,7 @@ main() {
       exit 0
       ;;
     -v|--version)
-      echo "onprem-compose-podman.sh $SCRIPT_VERSION"
+      echo "onprem-compose-docker.sh $SCRIPT_VERSION"
       exit 0
       ;;
     "")

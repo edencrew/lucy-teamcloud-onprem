@@ -16,7 +16,7 @@ services:
     volumes:
       - ./secrets:/secrets
       - ./nginx/certs:/certs
-      - ./scripts/init-secrets.sh:/init-secrets.sh:ro
+      - ./scripts/lib/init-secrets.sh:/init-secrets.sh:ro
     command: ["/bin/sh", "/init-secrets.sh"]
 
   gw:
