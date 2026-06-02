@@ -11,7 +11,7 @@ show_help() {
 $SCRIPT_NAME
 
 DESCRIPTION
-  Verify the standalone DMZ MQTT WebSocket proxy before running compose up.
+  Verify the standalone DMZ gateway proxy before running compose up.
 
 USAGE
   ./scripts/$SCRIPT_NAME [OPTIONS]

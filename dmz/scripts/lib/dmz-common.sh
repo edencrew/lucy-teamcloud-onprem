@@ -154,6 +154,22 @@ dmz_tls_enabled() {
   [ "$enabled" != "0" ]
 }
 
+dmz_proxy_mode() {
+  local mode
+  mode="$(dmz_env_value DMZ_PROXY_MODE)"
+  [ -n "$mode" ] || mode="mqtt"
+  printf '%s' "$mode"
+}
+
+dmz_teamcloud_upstream() {
+  local upstream
+  upstream="$(dmz_env_value INTERNAL_TEAMCLOUD_UPSTREAM)"
+  if [ -z "$upstream" ]; then
+    upstream="$(dmz_env_value INTERNAL_MQTT_UPSTREAM)"
+  fi
+  printf '%s' "$upstream"
+}
+
 join_by_space_quoted() {
   local out=""
   local item
@@ -325,12 +341,28 @@ dmz_compose_services_with_images() {
 }
 
 require_dmz_runtime_env() {
-  local server_name upstream
+  local mode server_name upstream
+  mode="$(dmz_proxy_mode)"
   server_name="$(dmz_env_value DMZ_SERVER_NAME)"
-  upstream="$(dmz_env_value INTERNAL_MQTT_UPSTREAM)"
 
   [ -n "$server_name" ] || die "DMZ_SERVER_NAME is not set in: $DMZ_ENV_FILE_RESOLVED"
-  [ -n "$upstream" ] || die "INTERNAL_MQTT_UPSTREAM is not set in: $DMZ_ENV_FILE_RESOLVED"
+
+  case "$mode" in
+    mqtt)
+      upstream="$(dmz_env_value INTERNAL_MQTT_UPSTREAM)"
+      [ -n "$upstream" ] || die "INTERNAL_MQTT_UPSTREAM is not set in: $DMZ_ENV_FILE_RESOLVED"
+      ;;
+    teamcloud)
+      upstream="$(dmz_teamcloud_upstream)"
+      [ -n "$upstream" ] || die "INTERNAL_TEAMCLOUD_UPSTREAM is not set in: $DMZ_ENV_FILE_RESOLVED"
+      if [ -z "$(dmz_env_value INTERNAL_TEAMCLOUD_UPSTREAM)" ]; then
+        warn "INTERNAL_TEAMCLOUD_UPSTREAM is not set; falling back to INTERNAL_MQTT_UPSTREAM for teamcloud mode."
+      fi
+      ;;
+    *)
+      die "DMZ_PROXY_MODE must be mqtt or teamcloud: $mode"
+      ;;
+  esac
 
   if dmz_tls_enabled; then
     local cert key cert_host key_host

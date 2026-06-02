@@ -1,15 +1,33 @@
-# DMZ MQTT-over-WebSocket Proxy
+# DMZ Gateway Proxy
 
-This standalone compose stack exposes only MQTT-over-WebSocket for mobile
-clients and proxies it to the internal Lucy TeamCloud nginx `/mqtt` endpoint.
+This standalone compose stack runs an nginx proxy in the DMZ.
+
+It supports two modes:
+
+- `DMZ_PROXY_MODE=mqtt`: the default. Exposes only MQTT-over-WebSocket `/mqtt`
+  and returns `404` for other paths.
+- `DMZ_PROXY_MODE=teamcloud`: exposes the full TeamCloud gateway through the
+  DMZ, including `/`, `/api`, `/auth`, `/git`, and `/mqtt`.
+
+Use `teamcloud` mode only when the DMZ is intended to be the external
+TeamCloud entrypoint. It exposes a much wider surface than broker-only `mqtt`
+mode.
 
 ```text
+MQTT mode:
 Mobile app
   -> wss://<dmz-domain>/mqtt
   -> or ws://<dmz-ip>/mqtt for plain WS mode
   -> DMZ nginx
   -> https://<internal-teamcloud>/mqtt
   -> internal broker
+
+TeamCloud mode:
+Browser / Lucy Studio / Git / MQTT client
+  -> https://<canonical-teamcloud-domain>/...
+  -> DMZ nginx
+  -> https://<internal-teamcloud>/...
+  -> internal onprem nginx
 ```
 
 ## Setup
@@ -23,12 +41,39 @@ Edit `.env`:
 
 ```env
 DMZ_SERVER_NAME=mqtt.company.com
+DMZ_PROXY_MODE=mqtt
 DMZ_ENABLE_TLS=1
 INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
 ```
 
-`INTERNAL_MQTT_UPSTREAM` must be reachable from the DMZ host and must not
-include `/mqtt`; the proxy preserves the incoming request path.
+In `mqtt` mode, `INTERNAL_MQTT_UPSTREAM` must be reachable from the DMZ host and
+must not include `/mqtt`; the proxy preserves the incoming request path.
+
+For full TeamCloud gateway mode:
+
+```env
+DMZ_SERVER_NAME=teamcloud.company.com
+DMZ_PROXY_MODE=teamcloud
+DMZ_ENABLE_TLS=1
+INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
+```
+
+`INTERNAL_TEAMCLOUD_UPSTREAM` must point to the internal onprem nginx origin and
+must not include a path. If it is empty, `teamcloud` mode falls back to
+`INTERNAL_MQTT_UPSTREAM` for compatibility.
+
+In `teamcloud` mode, use a single canonical URL for both internal and external
+clients. The onprem `.env` should use the canonical DNS URL, not a raw DMZ IP:
+
+```env
+EXTERNAL_URL=https://teamcloud.company.com
+BROKER_WS_URL=wss://teamcloud.company.com/mqtt
+PUBLIC_BROKER_WS_URL=wss://teamcloud.company.com/mqtt
+```
+
+Internal DNS should resolve `teamcloud.company.com` to the internal onprem
+gateway or to an internally reachable DMZ address. External DNS should resolve
+the same host to the DMZ address.
 
 Put the public DMZ TLS certificate and key here:
 
@@ -41,6 +86,7 @@ For IP-only test/private environments without a certificate, use plain WS:
 
 ```env
 DMZ_SERVER_NAME=203.0.113.10
+DMZ_PROXY_MODE=mqtt
 DMZ_ENABLE_TLS=0
 INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
 ```
@@ -172,16 +218,43 @@ curl -k https://203.0.113.10:18443/health
 curl http://203.0.113.10:18080/health
 ```
 
+## Proxy Modes
+
+### `DMZ_PROXY_MODE=mqtt`
+
+This is the default and safest DMZ mode.
+
+- `/mqtt` is proxied to `INTERNAL_MQTT_UPSTREAM`.
+- `/health` is served locally by the DMZ nginx container.
+- All other paths return `404`.
+- Use this when only mobile MQTT-over-WebSocket traffic should cross the DMZ.
+
+### `DMZ_PROXY_MODE=teamcloud`
+
+This mode makes the DMZ proxy the external TeamCloud gateway.
+
+- `/health` is served locally by the DMZ nginx container.
+- All other paths are proxied to `INTERNAL_TEAMCLOUD_UPSTREAM`.
+- Browser access, auth login/callbacks, Lucy Studio TeamCloud calls, Git HTTP
+  clone/push, and `/mqtt` WebSocket traffic all pass through the same canonical
+  host.
+- The upstream receives `Host: $http_host`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto`, and `X-Forwarded-For` so the canonical host and port are
+  preserved.
+
 ## Network Policy
 
 - Internet/mobile clients should reach only DMZ TCP 443.
 - In plain WS mode, clients reach DMZ TCP 80 instead.
-- DMZ should reach only the internal TeamCloud nginx HTTPS origin.
+- In `mqtt` mode, DMZ should reach only the internal TeamCloud nginx `/mqtt`
+  origin.
+- In `teamcloud` mode, DMZ must reach the internal onprem nginx origin for the
+  full TeamCloud gateway.
 - Do not expose internal broker ports `1883` or `8080` to the internet.
 
-If mobile clients receive the broker URL from TeamCloud, set the internal
-on-prem `.env` value to the DMZ URL. This value must match the DMZ endpoint
-clients can reach:
+If mobile clients receive the broker URL from TeamCloud in `mqtt` mode, set the
+internal onprem `.env` value to the DMZ URL. This value must match the DMZ
+endpoint clients can reach:
 
 ```env
 BROKER_WS_URL=wss://mqtt.company.com/mqtt
@@ -203,9 +276,16 @@ BROKER_WS_URL=ws://203.0.113.10:18080/mqtt
 
 ## Security Note
 
-This proxy does not add broker authentication or topic ACLs. The current broker
-configuration allows anonymous access, so external production exposure requires a
-separate broker authentication and ACL hardening task.
+This proxy does not add broker authentication, topic ACLs, application auth, or
+new access controls. It only forwards traffic.
+
+The current broker configuration allows anonymous access, so external
+production exposure requires a separate broker authentication and ACL hardening
+task.
+
+`DMZ_PROXY_MODE=teamcloud` exposes TeamCloud, Auth, API, Git, and MQTT paths
+through the DMZ. Treat it as a full external application gateway, not as a
+broker-only proxy.
 
 Plain `ws://` mode sends MQTT-over-WebSocket traffic without TLS. Use it only
 for controlled private networks or temporary validation, not public production

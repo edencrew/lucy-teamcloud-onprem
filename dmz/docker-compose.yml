@@ -9,8 +9,10 @@ services:
       - "${DMZ_HTTPS_PORT:-443}:443"
     environment:
       DMZ_SERVER_NAME: ${DMZ_SERVER_NAME}
+      DMZ_PROXY_MODE: ${DMZ_PROXY_MODE:-mqtt}
       DMZ_ENABLE_TLS: ${DMZ_ENABLE_TLS:-1}
-      INTERNAL_MQTT_UPSTREAM: ${INTERNAL_MQTT_UPSTREAM}
+      INTERNAL_MQTT_UPSTREAM: ${INTERNAL_MQTT_UPSTREAM:-}
+      INTERNAL_TEAMCLOUD_UPSTREAM: ${INTERNAL_TEAMCLOUD_UPSTREAM:-}
       DMZ_TLS_CERTIFICATE: ${DMZ_TLS_CERTIFICATE:-/etc/nginx/certs/server.crt}
       DMZ_TLS_CERTIFICATE_KEY: ${DMZ_TLS_CERTIFICATE_KEY:-/etc/nginx/certs/server.key}
     volumes:
@@ -20,12 +22,43 @@ services:
       - /bin/sh
       - -ec
       - |
-        if [ "$${DMZ_ENABLE_TLS:-1}" = "0" ]; then
-          template=/etc/nginx/templates/nginx.ws.conf.template
+        mode="$${DMZ_PROXY_MODE:-mqtt}"
+        case "$$mode" in
+          mqtt|teamcloud)
+            ;;
+          *)
+            echo "Unsupported DMZ_PROXY_MODE: $$mode" >&2
+            exit 1
+            ;;
+        esac
+
+        if [ "$$mode" = "teamcloud" ]; then
+          if [ -z "$${INTERNAL_TEAMCLOUD_UPSTREAM:-}" ]; then
+            INTERNAL_TEAMCLOUD_UPSTREAM="$${INTERNAL_MQTT_UPSTREAM:-}"
+          fi
+          if [ -z "$$INTERNAL_TEAMCLOUD_UPSTREAM" ]; then
+            echo "INTERNAL_TEAMCLOUD_UPSTREAM is required in teamcloud mode" >&2
+            exit 1
+          fi
+          if [ "$${DMZ_ENABLE_TLS:-1}" = "0" ]; then
+            template=/etc/nginx/templates/nginx.teamcloud.ws.conf.template
+          else
+            template=/etc/nginx/templates/nginx.teamcloud.wss.conf.template
+          fi
         else
-          template=/etc/nginx/templates/nginx.wss.conf.template
+          if [ -z "$${INTERNAL_MQTT_UPSTREAM:-}" ]; then
+            echo "INTERNAL_MQTT_UPSTREAM is required in mqtt mode" >&2
+            exit 1
+          fi
+          if [ "$${DMZ_ENABLE_TLS:-1}" = "0" ]; then
+            template=/etc/nginx/templates/nginx.ws.conf.template
+          else
+            template=/etc/nginx/templates/nginx.wss.conf.template
+          fi
         fi
-        envsubst '$$DMZ_SERVER_NAME $$INTERNAL_MQTT_UPSTREAM $$DMZ_TLS_CERTIFICATE $$DMZ_TLS_CERTIFICATE_KEY' \
+
+        export DMZ_PROXY_MODE INTERNAL_TEAMCLOUD_UPSTREAM
+        envsubst '$$DMZ_SERVER_NAME $$DMZ_PROXY_MODE $$INTERNAL_MQTT_UPSTREAM $$INTERNAL_TEAMCLOUD_UPSTREAM $$DMZ_TLS_CERTIFICATE $$DMZ_TLS_CERTIFICATE_KEY' \
           < "$$template" \
           > /etc/nginx/nginx.conf
         nginx -t

@@ -20,6 +20,29 @@ cd dmz
 ./scripts/preflight-dmz.sh --compose-up
 ```
 
+## 프록시 모드
+
+기본값은 broker-only 모드입니다.
+
+```env
+DMZ_PROXY_MODE=mqtt
+INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
+```
+
+TeamCloud 전체 접속, auth login, Lucy Studio 연동, Git clone/push까지 DMZ를
+통과시켜야 하면 `teamcloud` 모드를 사용합니다.
+
+```env
+DMZ_PROXY_MODE=teamcloud
+DMZ_SERVER_NAME=teamcloud.company.com
+INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
+```
+
+`teamcloud` 모드는 TC/Auth/API/Git/MQTT를 모두 외부에 노출합니다. onprem
+`.env`의 `EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`은 같은
+canonical DNS URL을 사용해야 하고, 내부/외부 DNS가 그 host를 각각 접근 가능한
+주소로 해석해야 합니다.
+
 ## 상태 확인
 
 ```bash
@@ -113,5 +136,5 @@ DMZ_RUNTIME=podman ./scripts/dmz-compose.sh ps
 
 - `docker compose down -v`는 실행하지 마세요. compose volume이 삭제될 수 있습니다.
 - `DMZ_ENABLE_TLS=1`이면 `certs/server.crt`, `certs/server.key`가 필요합니다.
-- `INTERNAL_MQTT_UPSTREAM`에는 `/mqtt` path를 붙이지 마세요.
+- `INTERNAL_MQTT_UPSTREAM`, `INTERNAL_TEAMCLOUD_UPSTREAM`에는 path를 붙이지 마세요.
 - 문제가 나면 먼저 `ps`, `logs`, `/health` 결과를 확인하세요.

@@ -31,7 +31,7 @@ show_help() {
 export-compose-images.sh
 
 DESCRIPTION
-  Export Docker images for the standalone DMZ MQTT WebSocket proxy into an
+  Export Docker images for the standalone DMZ gateway proxy into an
   offline archive.
 
   This script is fully self-contained under dmz/. It does not call the parent

@@ -71,6 +71,25 @@ archive 경로를 직접 지정할 수도 있습니다.
 cp .env.example .env
 ```
 
+프록시 모드를 선택합니다. 기본값은 broker-only 모드입니다.
+
+```env
+DMZ_PROXY_MODE=mqtt
+INTERNAL_MQTT_UPSTREAM=https://10.0.0.10
+```
+
+TeamCloud 전체를 DMZ로 노출해야 하면 `teamcloud` 모드를 사용합니다.
+
+```env
+DMZ_PROXY_MODE=teamcloud
+DMZ_SERVER_NAME=teamcloud.company.com
+INTERNAL_TEAMCLOUD_UPSTREAM=https://10.0.0.10
+```
+
+`teamcloud` 모드는 `/`, `/api`, `/auth`, `/git`, `/mqtt`를 모두 내부
+onprem nginx로 전달합니다. 내부/외부 클라이언트는 같은 canonical
+TeamCloud DNS를 사용해야 합니다.
+
 TLS 모드라면 인증서 파일도 준비합니다.
 
 ```text
