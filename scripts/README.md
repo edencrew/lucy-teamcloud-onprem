@@ -676,19 +676,26 @@ id -u
 id -g
 ```
 
-`preflight-onprem.sh`는 runtime 디렉터리를 이 UID/GID 기준으로 준비합니다.
-단, 다음 자동 생성 산출물은 `root:root`여도 허용합니다.
+`HOST_UID/HOST_GID`는 Gitea 실행 사용자와 host-managed 디렉터리 준비에 사용됩니다.
+preflight는 `secrets`, `nginx/certs`, `license`를 이 UID/GID 기준으로 준비합니다.
+
+서비스 data 디렉터리는 컨테이너 entrypoint와 Docker/Podman runtime에 맡깁니다.
+preflight는 아래 경로가 없으면 생성만 하고, 소유권을 강제로 바꾸지 않습니다.
 
 ```text
-git/data/gitea/.admin-created
-git/data/ssh/
+postgres/data
+git/data
+broker/data
+broker/logs
+```
+
+단, 다음 자동 생성 산출물은 host-managed 디렉터리 검사에서 `root:root`여도 허용합니다.
+
+```text
 secrets/secrets.env
 nginx/certs/server.crt
 nginx/certs/server.key
 ```
-
-`git/data/ssh/`는 디렉터리와 그 하위 항목을 포함합니다. 이 목록 밖의 root-owned
-파일이나 디렉터리는 계속 실패 또는 보정 대상입니다.
 
 ---
 
@@ -1175,26 +1182,26 @@ Error: Permission denied
 
 `broker/data` 또는 `broker/logs` bind mount를 컨테이너가 읽거나 쓸 수 없는 상태입니다.
 
-먼저 preflight로 runtime 디렉터리 생성과 기본 소유권 검사를 수행합니다.
+먼저 preflight로 service data 디렉터리 생성과 compose 설정 검사를 수행합니다.
 
 ```bash
 ONPREM_RUNTIME=podman ./scripts/preflight-onprem.sh --skip-resource-check
 ```
 
-운영 계정의 UID/GID를 명시하려면 `.env`에 다음 값을 설정합니다.
+preflight는 `broker/data`, `broker/logs`의 owner를 강제로 바꾸지 않습니다.
+Docker/Podman runtime과 Mosquitto entrypoint가 실제 data 파일을 준비하게 둡니다.
 
-```env
-HOST_UID=1000
-HOST_GID=1000
-```
+Podman rootless 환경에서 계속 실패하면 다음을 확인합니다.
 
-Podman rootless 환경에서 계속 실패하면 `broker/data`, `broker/logs`가 디렉터리인지,
-현재 운영 계정으로 접근 가능한지, SELinux label이 `docker-compose.podman.yml`의 `:z`
-mount로 적용되는지 확인합니다.
+- `broker/data`, `broker/logs`가 파일이 아니라 디렉터리인지
+- `docker-compose.podman.yml` merged config에 `:z` mount가 적용되는지
+- 호스트 owner가 `167418:167418` 같은 숫자로 보여도 Podman user namespace 매핑일 수 있음
+- 실제 실패 지점은 broker 컨테이너 로그의 `permission denied` 경로
 
 ```bash
 mkdir -p broker/data broker/logs
 ls -ld broker/data broker/logs
+docker compose -f docker-compose.yml -f docker-compose.offline.yml -f docker-compose.podman.yml config | grep -A5 'broker/data'
 ```
 
 ---

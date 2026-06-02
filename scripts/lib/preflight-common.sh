@@ -134,28 +134,28 @@ resolve_runtime_owner() {
   RUNTIME_GID="${env_gid:-$current_gid}"
 
   if [ -z "$RUNTIME_UID" ] || [ -z "$RUNTIME_GID" ]; then
-    fail_msg "Could not resolve runtime UID/GID. Set HOST_UID and HOST_GID in .env."
+    fail_msg "Could not resolve host-managed bind mount UID/GID. Set HOST_UID and HOST_GID in .env."
     return 1
   fi
 
   if [ "$RUNTIME_UID" = "0" ]; then
-    fail_msg "Runtime bind mount owner must not be root. Set HOST_UID/HOST_GID to the install user's id values."
+    fail_msg "Host-managed bind mount owner must not be root. Set HOST_UID/HOST_GID to the install user's id values."
     return 1
   fi
 
   if [ -z "$env_uid" ]; then
-    warn "HOST_UID is not set. Using current UID for bind mount preparation: $RUNTIME_UID"
+    warn "HOST_UID is not set. Using current UID for host-managed bind mount preparation: $RUNTIME_UID"
   else
     ok "HOST_UID is set: $env_uid"
   fi
 
   if [ -z "$env_gid" ]; then
-    warn "HOST_GID is not set. Using current GID for bind mount preparation: $RUNTIME_GID"
+    warn "HOST_GID is not set. Using current GID for host-managed bind mount preparation: $RUNTIME_GID"
   else
     ok "HOST_GID is set: $env_gid"
   fi
 
-  ok "Runtime bind mount owner target: ${RUNTIME_UID}:${RUNTIME_GID}"
+  ok "Host-managed bind mount owner target: ${RUNTIME_UID}:${RUNTIME_GID}"
 }
 
 ensure_directory_exists() {
@@ -280,28 +280,6 @@ EOF_OWNER_MISMATCH
   return 0
 }
 
-first_root_owned_path() {
-  local path="$1"
-  local first
-
-  first="$(find "$path" -user 0 -print -quit 2>/dev/null || true)"
-  printf '%s' "$first"
-}
-
-print_root_owned_sample() {
-  local path="$1"
-
-  find "$path" -user 0 -print 2>/dev/null | sed -n '1,5p'
-}
-
-directory_is_empty() {
-  local path="$1"
-  local first
-
-  first="$(find "$path" -mindepth 1 -print -quit 2>/dev/null || printf '%s' "__find_failed__")"
-  [ -z "$first" ]
-}
-
 prepare_host_owned_directory() {
   local rel="$1"
   local full="$ROOT_DIR/$rel"
@@ -309,7 +287,7 @@ prepare_host_owned_directory() {
 
   ensure_directory_exists "$rel" || return 0
 
-  info_msg "Checking runtime directory ownership: $rel"
+  info_msg "Checking host-managed directory ownership: $rel"
   log_allowed_root_owned_generated_paths "$full" "$RUNTIME_UID" "$RUNTIME_GID"
   mismatch="$(first_disallowed_owner_mismatch "$full" "$RUNTIME_UID" "$RUNTIME_GID")"
   if [ -n "$mismatch" ]; then
@@ -332,32 +310,12 @@ prepare_host_owned_directory() {
   fi
 }
 
-prepare_service_owned_directory() {
+prepare_service_data_directory() {
   local rel="$1"
-  local full="$ROOT_DIR/$rel"
-  local root_owned
 
   ensure_directory_exists "$rel" || return 0
 
-  info_msg "Checking service data directory ownership: $rel"
-  root_owned="$(first_root_owned_path "$full")"
-  if [ -n "$root_owned" ]; then
-    if directory_is_empty "$full"; then
-      if chown "$RUNTIME_UID:$RUNTIME_GID" "$full" 2>/dev/null; then
-        ok "Empty service data directory ownership prepared: $rel -> ${RUNTIME_UID}:${RUNTIME_GID}"
-      else
-        fail_msg "Empty service data directory is root-owned and automatic chown failed: $rel"
-        warn "Suggested fix: sudo chown ${RUNTIME_UID}:${RUNTIME_GID} $(shell_quote "$full")"
-      fi
-    else
-      fail_msg "Service data directory contains root-owned entries: $rel"
-      warn "Preflight does not recursively chown existing PostgreSQL data."
-      warn "Root-owned sample:"
-      print_root_owned_sample "$full" >&2
-    fi
-  else
-    ok "Service data directory exists and is not root-owned: $rel"
-  fi
+  ok "Service data directory exists; ownership left to container runtime: $rel"
 }
 
 array_contains() {
@@ -1493,14 +1451,16 @@ prepare_bind_mount_directories() {
 
   log "Preparing runtime bind mount directories..."
 
+  for d in $service_data_dirs; do
+    prepare_service_data_directory "$d"
+  done
+
+  [ -n "$host_owned_dirs" ] || return 0
+
   resolve_runtime_owner || return 0
 
   for d in $host_owned_dirs; do
     prepare_host_owned_directory "$d"
-  done
-
-  for d in $service_data_dirs; do
-    prepare_service_owned_directory "$d"
   done
 }
 

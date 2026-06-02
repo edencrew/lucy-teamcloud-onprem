@@ -30,8 +30,8 @@ MIN_RAM_MB="4096"
 MIN_DISK_MB="10240"
 
 IMMUTABLE_KEYS="LUCY_ADMIN_EMAIL LUCY_ADMIN_PASSWORD DB_USERNAME DB_PASSWORD DB_ROOT_PASSWORD"
-ROOT_OWNED_GENERATED_FILES="git/data/gitea/.admin-created secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
-ROOT_OWNED_GENERATED_DIRS="git/data/ssh"
+ROOT_OWNED_GENERATED_FILES="secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key"
+ROOT_OWNED_GENERATED_DIRS=""
 COMPOSE_RUNTIME_FLAVOR="docker"
 COMPOSE_CONFIG_LABEL="Docker Compose"
 
@@ -197,7 +197,7 @@ validate_docker_versions() {
 }
 
 prepare_and_validate_directories() {
-  prepare_bind_mount_directories "git/data broker/data broker/logs secrets nginx/certs license" "postgres/data"
+  prepare_bind_mount_directories "secrets nginx/certs license" "postgres/data git/data broker/data broker/logs"
 }
 
 run_compose_up() {

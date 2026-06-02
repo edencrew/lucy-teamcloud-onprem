@@ -51,7 +51,7 @@ TZ=Asia/Seoul
 | `BROKER_WS_URL` | `EXTERNAL_URL` 의 스킴과 짝을 맞출 것 (`https` → `wss://`, `http` → `ws://`). 기본 경로는 `/mqtt` |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요 (예: `DB_PASSWORD="P@ss!word"`) |
-| Linux 환경 | `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
+| Linux 환경 | 필요 시 `HOST_UID`, `HOST_GID`를 `id` 명령어로 확인 후 설정 |
 
 ### 1.4 계정 정보 변경 불가 안내
 
@@ -228,7 +228,7 @@ docker compose ps -a
 ### 데이터베이스 연결 오류
 
 1. `.env` 파일의 `DB_USERNAME`, `DB_PASSWORD` 확인
-2. `postgres/data/` 폴더 권한 확인 (Linux)
+2. `db` 컨테이너 로그와 `postgres/data/` 경로 상태 확인 (Linux)
 
 ### 포트 충돌
 
