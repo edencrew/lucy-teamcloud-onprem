@@ -22,7 +22,7 @@ set -Eeo pipefail
 #   can fail with "unbound variable". This script intentionally avoids
 #   nounset for portability and validates required values explicitly.
 
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.5.1"
 
 show_help() {
   cat <<'EOF'
@@ -54,8 +54,9 @@ WHAT IT DOES
      - If a service has both image: and build:, its image is built locally,
        not pulled from a registry.
   8. Builds services that use build:.
-  9. Saves pulled and built images into <project-root>/images/*.tar.gz.
-  10. Creates checksum and image-list files.
+  9. Verifies pulled registry images against current remote tag digests.
+  10. Saves pulled and built images into <project-root>/images/*.tar.gz.
+  11. Creates checksum and image-list files.
 
   With --update-service, only the selected service image(s) are pulled/built
   and saved into the archive. Manifest files are still written for the full
@@ -77,6 +78,10 @@ OPTIONS
 
       This option may be repeated:
         ./scripts/export-compose-images.sh --update-service tc-fe --update-service auth-fe
+
+  --skip-remote-digest-check
+      Skip final remote-vs-local digest verification for pulled registry images.
+      Not recommended for release/offline packages.
 
 ENVIRONMENT VARIABLES
   PROJECT_ROOT
@@ -128,6 +133,12 @@ ENVIRONMENT VARIABLES
 
       Example:
         COMPOSE_OVERRIDE_FILES="docker-compose.local.yaml:docker-compose.customer.yaml"
+
+  VERIFY_REMOTE_DIGESTS
+      Verify pulled registry images against current remote tag digests before
+      saving the image archive.
+      Default: 1
+      Set to 0 to skip.
 
 AUTO-DETECTED COMPOSE FILES
   Base compose file, first match in PROJECT_ROOT:
@@ -193,6 +204,7 @@ OUTPUT FILES
     <project-name>-images-linux-amd64.images.txt
     <project-name>-images-linux-amd64.archive-images.txt
     <project-name>-images-linux-amd64.explicit-images.txt
+    <project-name>-images-linux-amd64.remote-digests.txt
     <project-name>-images-linux-amd64.services.txt
 
 OFFLINE SERVER USAGE
@@ -212,6 +224,7 @@ NOTES
       * The tar.gz contains only the selected service image(s).
       * *.images.txt and *.services.txt still describe the full stack.
       * *.archive-images.txt lists only images actually included in tar.gz.
+      * *.remote-digests.txt reports remote-vs-local digest verification.
       * The offline server is expected to already have unchanged images.
 
   - Services using build: are built locally by:
@@ -228,6 +241,10 @@ NOTES
       docker pull --platform linux/amd64 <image>
 
     Or run this script on an amd64 Linux machine.
+
+  - Remote digest verification compares the registry tag digest reported by
+    docker buildx imagetools inspect with the local image RepoDigests. It is
+    skipped for images produced by local build: services.
 
 EOF
 }
@@ -577,6 +594,215 @@ image_exists() {
   docker image inspect "$image" >/dev/null 2>&1
 }
 
+remote_image_digest() {
+  local image="$1"
+  local raw=""
+
+  raw="$(docker buildx imagetools inspect "$image" 2>/dev/null || true)"
+  printf '%s\n' "$raw" | awk '/^Digest:[[:space:]]*/ { print $2; exit }'
+}
+
+local_image_repo_digest_values() {
+  local image="$1"
+
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" 2>/dev/null \
+    | awk -F '@' 'NF >= 2 && $2 != "" { print $2 }' \
+    | sort -u
+}
+
+local_image_has_repo_digest() {
+  local image="$1"
+  local digest="$2"
+
+  local_image_repo_digest_values "$image" \
+    | awk -v digest="$digest" '$0 == digest { found = 1; exit } END { exit found ? 0 : 1 }'
+}
+
+first_local_image_repo_digest() {
+  local image="$1"
+
+  local_image_repo_digest_values "$image" | head -n 1
+}
+
+image_registry() {
+  local image="$1"
+  local first="${image%%/*}"
+
+  if [ "$first" = "$image" ]; then
+    printf '%s' "docker.io"
+    return 0
+  fi
+
+  case "$first" in
+    *.*|*:*|localhost)
+      printf '%s' "$first"
+      ;;
+    *)
+      printf '%s' "docker.io"
+      ;;
+  esac
+}
+
+ecr_region_from_registry() {
+  local registry="$1"
+
+  printf '%s\n' "$registry" | awk -F '.' '
+    {
+      for (i = 1; i <= NF - 3; i++) {
+        if ($(i + 1) == "dkr" && $(i + 2) == "ecr") {
+          print $(i + 3)
+          exit
+        }
+      }
+    }
+  '
+}
+
+print_pull_error() {
+  local image="$1"
+  local registry region
+
+  registry="$(image_registry "$image")"
+  region="$(ecr_region_from_registry "$registry")"
+
+  cat >&2 <<EOF_PULL_ERROR
+
+Failed to pull image:
+  $image
+
+Registry:
+  $registry
+
+EOF_PULL_ERROR
+
+  case "$registry" in
+    public.ecr.aws)
+      cat >&2 <<EOF_PUBLIC_ECR
+Most likely causes for public ECR:
+  - The tag is not published in public ECR.
+  - docker-compose.yml points to public.ecr.aws, but the image exists only in private ECR.
+  - The tag exists, but does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Checks:
+  docker buildx imagetools inspect $image
+
+If the image is private, change the compose image or add an override that points
+to the private ECR repository, for example:
+  <account-id>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
+
+EOF_PUBLIC_ECR
+      ;;
+    *.dkr.ecr.*.amazonaws.com|*.dkr.ecr.*.amazonaws.com.cn)
+      [ -n "$region" ] || region="<region>"
+      cat >&2 <<EOF_PRIVATE_ECR
+Possible causes for AWS Private ECR:
+  - You are not logged in to this registry.
+  - The repository or tag does not exist in this private ECR registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Login example:
+  aws ecr get-login-password --region $region \\
+    | docker login --username AWS --password-stdin $registry
+
+Check:
+  docker buildx imagetools inspect $image
+
+EOF_PRIVATE_ECR
+      ;;
+    *)
+      cat >&2 <<EOF_GENERIC_REGISTRY
+Possible causes:
+  - The repository or tag does not exist in the registry.
+  - You are not logged in to a private registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+  - The image is intended to be built locally, not pulled.
+
+Checks:
+  docker buildx imagetools inspect $image
+  docker pull --platform $TARGET_PLATFORM_RESOLVED $image
+
+EOF_GENERIC_REGISTRY
+      ;;
+  esac
+}
+
+verify_remote_digests() {
+  local report_file="$1"
+  shift
+
+  local images=("$@")
+  local image remote_digest local_digest status
+  local checked=0
+  local failures=0
+
+  printf 'image\tremote_digest\tlocal_digest\tstatus\n' > "$report_file"
+
+  if [ "${#images[@]}" -eq 0 ]; then
+    printf '%s\t%s\t%s\t%s\n' "-" "-" "-" "SKIPPED_NO_REGISTRY_IMAGES" >> "$report_file"
+    log "Skipping remote digest verification. No registry images were pulled."
+    return 0
+  fi
+
+  if ! docker buildx version >/dev/null 2>&1; then
+    die "Docker buildx is required for remote digest verification. Install/enable buildx or rerun with --skip-remote-digest-check."
+  fi
+
+  log "Verifying local images against remote registry digests..."
+
+  for image in "${images[@]}"; do
+    if array_contains "$image" "${BUILD_IMAGES[@]}"; then
+      continue
+    fi
+
+    checked=1
+    remote_digest="$(remote_image_digest "$image")"
+    local_digest="$(first_local_image_repo_digest "$image")"
+
+    if [ -z "$remote_digest" ]; then
+      status="FAIL_REMOTE_DIGEST_UNAVAILABLE"
+      failures=$((failures + 1))
+      printf '  %-80s %s\n' "$image" "$status" >&2
+      printf '%s\t%s\t%s\t%s\n' "$image" "" "$local_digest" "$status" >> "$report_file"
+      continue
+    fi
+
+    if local_image_has_repo_digest "$image" "$remote_digest"; then
+      status="OK"
+      local_digest="$remote_digest"
+      printf '  %-80s %s\n' "$image" "$remote_digest"
+    else
+      status="FAIL_DIGEST_MISMATCH"
+      failures=$((failures + 1))
+      printf '  %-80s remote=%s local=%s\n' "$image" "$remote_digest" "${local_digest:-none}" >&2
+    fi
+
+    printf '%s\t%s\t%s\t%s\n' "$image" "$remote_digest" "$local_digest" "$status" >> "$report_file"
+  done
+
+  if [ "$checked" = "0" ]; then
+    printf '%s\t%s\t%s\t%s\n' "-" "-" "-" "SKIPPED_ONLY_BUILD_IMAGES" >> "$report_file"
+    log "Skipping remote digest verification. Only build images were selected."
+    return 0
+  fi
+
+  if [ "$failures" -gt 0 ]; then
+    cat >&2 <<EOF_DIGEST_ERROR
+
+Remote digest verification failed.
+
+The local image cache does not match the current registry tag for one or more
+images. Re-run this script with network access so docker pull can refresh the
+images, or inspect the digest report:
+
+  $report_file
+
+EOF_DIGEST_ERROR
+    exit 1
+  fi
+
+  log "Remote digest verification passed."
+}
+
 check_image_save() {
   local image="$1"
   local tmp_file="$2"
@@ -603,6 +829,7 @@ sha256_file() {
 
 parse_args() {
   UPDATE_SERVICES=()
+  VERIFY_REMOTE_DIGESTS="${VERIFY_REMOTE_DIGESTS:-1}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -628,6 +855,9 @@ parse_args() {
         if ! array_contains "$service" "${UPDATE_SERVICES[@]}"; then
           UPDATE_SERVICES+=("$service")
         fi
+        ;;
+      --skip-remote-digest-check)
+        VERIFY_REMOTE_DIGESTS=0
         ;;
       *)
         die "Unknown argument: $1
@@ -681,6 +911,7 @@ main() {
   OUTPUT_NAME="${OUTPUT_NAME:-${project_name}-images-${TARGET_PLATFORM_RESOLVED//\//-}.tar.gz}"
   OUTPUT_PATH="$OUTPUT_DIR/$OUTPUT_NAME"
   OUTPUT_BASE="${OUTPUT_NAME%.tar.gz}"
+  DIGEST_REPORT_FILE="$OUTPUT_DIR/$OUTPUT_BASE.remote-digests.txt"
 
   mkdir -p "$OUTPUT_DIR"
 
@@ -818,21 +1049,7 @@ EOF_SERVICE_IMAGES
 
     log "Pulling: $img"
     if ! docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$img"; then
-      cat >&2 <<EOF_PULL_ERROR
-
-Failed to pull image:
-  $img
-
-Possible causes:
-  - You are not logged in to a private registry.
-  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
-  - The image is intended to be built locally, not pulled.
-
-For AWS Private ECR, login example:
-  aws ecr get-login-password --region ap-northeast-2 \\
-    | docker login --username AWS --password-stdin <account-id>.dkr.ecr.ap-northeast-2.amazonaws.com
-
-EOF_PULL_ERROR
+      print_pull_error "$img"
       exit 1
     fi
   done
@@ -916,6 +1133,14 @@ EOF_META_SERVICES
     fi
   done
 
+  if [ "$VERIFY_REMOTE_DIGESTS" = "1" ]; then
+    verify_remote_digests "$DIGEST_REPORT_FILE" "${PULL_IMAGES[@]}"
+  else
+    warn "Skipping remote digest verification by request."
+    printf 'image\tremote_digest\tlocal_digest\tstatus\n' > "$DIGEST_REPORT_FILE"
+    printf '%s\t%s\t%s\t%s\n' "-" "-" "-" "SKIPPED_BY_REQUEST" >> "$DIGEST_REPORT_FILE"
+  fi
+
   log "Testing docker save image by image..."
   local tmp_dir
   tmp_dir="$(mktemp -d)"
@@ -940,7 +1165,7 @@ EOF_META_SERVICES
   sha256_file "$OUTPUT_PATH"
 
   log "Export complete."
-  ls -lh "$OUTPUT_PATH" "$OUTPUT_PATH.sha256" "$OUTPUT_DIR/$OUTPUT_BASE.images.txt" "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt" "$SERVICE_META_FILE" 2>/dev/null || true
+  ls -lh "$OUTPUT_PATH" "$OUTPUT_PATH.sha256" "$OUTPUT_DIR/$OUTPUT_BASE.images.txt" "$OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt" "$DIGEST_REPORT_FILE" "$SERVICE_META_FILE" 2>/dev/null || true
 
   cat <<EOF_DONE
 
@@ -953,6 +1178,7 @@ Files created:
   $OUTPUT_PATH.sha256
   $OUTPUT_DIR/$OUTPUT_BASE.images.txt
   $OUTPUT_DIR/$OUTPUT_BASE.archive-images.txt
+  $DIGEST_REPORT_FILE
   $SERVICE_META_FILE
 
 EOF_DONE

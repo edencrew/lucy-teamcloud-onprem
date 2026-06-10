@@ -27,11 +27,13 @@ lucy-teamcloud-onprem/
 
   scripts/
     export-compose-images.sh
+    export-clean-tar.sh
     load-compose-images.sh
     preflight-onprem.sh
     onprem-compose.sh
     lib/
       export-compose-images.sh
+      export-clean-tar.sh
       load-compose-images.sh
       preflight-docker.sh
       preflight-podman.sh
@@ -170,6 +172,43 @@ Mosquitto 공식 broker 이미지 pull
 특정 서비스 이미지만 부분 archive로 저장
 sha256 체크섬 생성
 이미지 목록 파일 생성
+```
+
+---
+
+## 2.5.1 `scripts/export-clean-tar.sh`
+
+인터넷이 가능한 PC에서 전체 프로젝트 디렉토리를 Windows/Linux에서 깨끗하게 풀리는
+tar.gz 파일로 묶는 스크립트입니다.
+
+기본 동작:
+
+```text
+./scripts/export-compose-images.sh 먼저 실행
+프로젝트 전체 디렉토리 tar.gz 생성
+macOS metadata 파일과 libarchive xattr header 제외
+gzip 무결성 / macOS metadata path / xattr header 검증
+sha256 체크섬 생성
+```
+
+생성 위치는 기본적으로 프로젝트 디렉토리의 상위 디렉토리입니다.
+
+파일 이름은 다음 형식입니다.
+
+```text
+lucy-teamcloud-onprem_YYYY_MM_DD.tar.gz
+```
+
+같은 날짜 파일이 이미 있으면 시간까지 붙입니다.
+
+```text
+lucy-teamcloud-onprem_YYYY_MM_DD_HHMMSS.tar.gz
+```
+
+이미지 export를 건너뛰고 현재 파일 상태만 묶으려면 다음 옵션을 사용합니다.
+
+```bash
+./scripts/export-clean-tar.sh --skip-image-export
 ```
 
 ---
@@ -339,6 +378,7 @@ images/
   lucy-teamcloud-onprem-images-linux-amd64.images.txt
   lucy-teamcloud-onprem-images-linux-amd64.archive-images.txt
   lucy-teamcloud-onprem-images-linux-amd64.explicit-images.txt
+  lucy-teamcloud-onprem-images-linux-amd64.remote-digests.txt
   lucy-teamcloud-onprem-images-linux-amd64.services.txt
 ```
 
@@ -346,6 +386,10 @@ images/
 이 경우 tar.gz에는 선택한 서비스 이미지들만 들어가지만, `*.images.txt`와
 `*.services.txt`는 전체 Compose stack 기준으로 생성됩니다. 폐쇄망 서버에는
 선택하지 않은 기존 이미지가 이미 있어야 합니다.
+
+`*.remote-digests.txt`는 export 직전에 원격 registry tag digest와 로컬 image
+`RepoDigests`를 비교한 결과입니다. `init-secrets`처럼 `build:`로 생성되는 이미지는
+원격 비교 대상에서 제외됩니다.
 
 ```bash
 ./scripts/export-compose-images.sh --update-service tc-fe
@@ -358,6 +402,19 @@ images/
 
 ```bash
 ./scripts/export-compose-images.sh --help
+```
+
+전체 프로젝트를 폐쇄망 서버나 Windows PC로 옮길 tar.gz까지 함께 만들려면
+다음 명령을 사용합니다. 이 명령은 기본적으로 이미지 export를 먼저 수행합니다.
+
+```bash
+./scripts/export-clean-tar.sh
+```
+
+이미지 export를 이미 마쳤고 tar.gz만 다시 만들려면 다음처럼 실행합니다.
+
+```bash
+./scripts/export-clean-tar.sh --skip-image-export
 ```
 
 ---
