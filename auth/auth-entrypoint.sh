@@ -17,7 +17,10 @@ export OIDC_CLIENTS_PRESET=$(cat <<EOF
   "redirectUris":["${EXTERNAL_URL}/auth/callback"],
   "grantTypes":["authorization_code","refresh_token"],
   "scopes":["openid","email","profile","offline_access"],
-  "postLogoutRedirectUris":["${EXTERNAL_URL}/auth/"]
+  "postLogoutRedirectUris":["${EXTERNAL_URL}/auth/"],
+  "displayName":"Lucy TeamCloud",
+  "appUrl":"${EXTERNAL_URL}",
+  "signedInButtonLabel":"Open Lucy TeamCloud"
 },{
   "clientId":"lucy-teamcloud-oidc-client-id",
   "clientSecret":"${TC_OIDC_CLIENT_SECRET}",
@@ -30,7 +33,7 @@ export OIDC_CLIENTS_PRESET=$(cat <<EOF
   "clientId":"lucy-studio-oidc-client-id",
   "clientName":"Lucy Studio",
   "applicationType":"native",
-  "redirectUris":["com.edencrew.lucystudio://auth"],
+  "redirectUris":["com.edencrew.lucystudio://auth", "http://127.0.0.1/auth"],
   "grantTypes":["authorization_code","refresh_token"],
   "scopes":["openid","email","profile","offline_access"],
   "token_endpoint_auth_method":"none"

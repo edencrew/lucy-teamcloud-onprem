@@ -7,17 +7,10 @@ set -a
 . /run/secrets/secrets.env
 set +a
 
-# EXTERNAL_URL 트레일링 슬래시 제거 (ROOT_URL 의 // 발생 방지)
-EXTERNAL_URL_CLEAN=$(echo "$EXTERNAL_URL" | sed -E 's#/+$##')
-
-# EXTERNAL_URL에서 호스트(도메인 또는 IP) 추출 — 포트와 경로는 제외
-#   https://example.com         -> example.com
-#   https://example.com:8443    -> example.com
-#   https://192.168.0.100:8443  -> 192.168.0.100
-# Gitea의 [server] DOMAIN 은 호스트명만 받으므로 포트는 제거 (ROOT_URL 에는 포함 OK).
-EXTERNAL_HOST=$(echo "$EXTERNAL_URL_CLEAN" | sed -E 's#https?://([^/:]+).*#\1#')
-export GITEA__server__DOMAIN=$EXTERNAL_HOST
-export GITEA__server__ROOT_URL="${EXTERNAL_URL_CLEAN}/git/"
+# Gitea 는 docker network 내부 호스트(git)로만 노출. 사용자는 nginx → tc-be Git Proxy 경유로 도달.
+# ROOT_URL 을 외부 도메인으로 두면 응답 cloneUrl 이 BE 컨테이너에서 도달 불가 → 시드 push 실패.
+export GITEA__server__DOMAIN=git
+export GITEA__server__ROOT_URL="http://git/"
 
 # app.ini 초기화
 # app.ini의 상위폴더가 data폴더로 이미 마운트되어 하위 app.ini는 마운트 불가
