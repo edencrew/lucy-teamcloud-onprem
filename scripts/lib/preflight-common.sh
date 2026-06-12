@@ -1109,6 +1109,217 @@ get_compose_images() {
   get_compose_service_meta | awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' | sort -u
 }
 
+validate_onprem_image_mode() {
+  ONPREM_IMAGE_MODE_RESOLVED="${ONPREM_IMAGE_MODE:-offline}"
+
+  case "$ONPREM_IMAGE_MODE_RESOLVED" in
+    offline|online)
+      ok "Image mode: $ONPREM_IMAGE_MODE_RESOLVED"
+      ;;
+    *)
+      fail_msg "ONPREM_IMAGE_MODE must be offline or online: $ONPREM_IMAGE_MODE_RESOLVED"
+      return 1
+      ;;
+  esac
+}
+
+image_registry() {
+  local image="$1"
+  local first="${image%%/*}"
+
+  if [ "$first" = "$image" ]; then
+    printf '%s' "docker.io"
+    return 0
+  fi
+
+  case "$first" in
+    *.*|*:*|localhost)
+      printf '%s' "$first"
+      ;;
+    *)
+      printf '%s' "docker.io"
+      ;;
+  esac
+}
+
+ecr_region_from_registry() {
+  local registry="$1"
+
+  printf '%s\n' "$registry" | awk -F '.' '
+    {
+      for (i = 1; i <= NF - 3; i++) {
+        if ($(i + 1) == "dkr" && $(i + 2) == "ecr") {
+          print $(i + 3)
+          exit
+        }
+      }
+    }
+  '
+}
+
+print_pull_error() {
+  local image="$1"
+  local registry region
+
+  registry="$(image_registry "$image")"
+  region="$(ecr_region_from_registry "$registry")"
+
+  cat >&2 <<EOF_PULL_ERROR
+
+Failed to pull image:
+  $image
+
+Registry:
+  $registry
+
+EOF_PULL_ERROR
+
+  case "$registry" in
+    public.ecr.aws)
+      cat >&2 <<EOF_PUBLIC_ECR
+Most likely causes for public ECR:
+  - The tag is not published in public ECR.
+  - docker-compose.yml points to public.ecr.aws, but the image exists only in private ECR.
+  - The tag exists, but does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Checks:
+  docker buildx imagetools inspect $image
+
+If the image is private, change the compose image or add an override that points
+to the private ECR repository, for example:
+  <account-id>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
+
+EOF_PUBLIC_ECR
+      ;;
+    *.dkr.ecr.*.amazonaws.com|*.dkr.ecr.*.amazonaws.com.cn)
+      [ -n "$region" ] || region="<region>"
+      cat >&2 <<EOF_PRIVATE_ECR
+Possible causes for AWS Private ECR:
+  - You are not logged in to this registry.
+  - The repository or tag does not exist in this private ECR registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Login example:
+  aws ecr get-login-password --region $region \\
+    | docker login --username AWS --password-stdin $registry
+
+Check:
+  docker buildx imagetools inspect $image
+
+EOF_PRIVATE_ECR
+      ;;
+    *)
+      cat >&2 <<EOF_GENERIC_REGISTRY
+Possible causes:
+  - The repository or tag does not exist in the registry.
+  - You are not logged in to a private registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+  - The image is intended to be built locally, not pulled.
+
+Checks:
+  docker buildx imagetools inspect $image
+  docker pull --platform $TARGET_PLATFORM_RESOLVED $image
+
+EOF_GENERIC_REGISTRY
+      ;;
+  esac
+}
+
+canonical_image_for_localhost_alias() {
+  local image="$1"
+
+  case "$image" in
+    localhost/nginx:1.26-alpine)
+      printf '%s' "nginx:1.26-alpine"
+      ;;
+    localhost/postgres:17)
+      printf '%s' "postgres:17"
+      ;;
+    localhost/eclipse-mosquitto:2.0.22)
+      printf '%s' "eclipse-mosquitto:2.0.22"
+      ;;
+    *)
+      printf '%s' "$image"
+      ;;
+  esac
+}
+
+prepare_online_build_service_image() {
+  local service="$1"
+  local image="$2"
+
+  log "Building compose service image for online mode: $service -> $image"
+  if compose build "$service"; then
+    ok "Built image: $image"
+  else
+    fail_msg "Failed to build image for service: $service ($image)"
+  fi
+}
+
+prepare_online_registry_image() {
+  local image="$1"
+  local source
+
+  source="$(canonical_image_for_localhost_alias "$image")"
+
+  if [ "$source" = "$image" ]; then
+    case "$image" in
+      localhost/*)
+        fail_msg "Online image mode does not know how to create localhost image: $image"
+        warn "Add an explicit alias mapping or use offline image archive loading."
+        return 1
+        ;;
+    esac
+  fi
+
+  log "Pulling image for online mode: $source"
+  if docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$source"; then
+    ok "Pulled image: $source"
+  else
+    print_pull_error "$source"
+    fail_msg "Failed to pull image: $source"
+    return 1
+  fi
+
+  if [ "$source" != "$image" ]; then
+    if docker tag "$source" "$image"; then
+      ok "Tagged image alias: $image <- $source"
+    else
+      fail_msg "Failed to tag image alias: $image <- $source"
+      return 1
+    fi
+  fi
+}
+
+prepare_online_images() {
+  validate_onprem_image_mode || return 0
+
+  if [ "$ONPREM_IMAGE_MODE_RESOLVED" != "online" ]; then
+    return 0
+  fi
+
+  TARGET_PLATFORM_RESOLVED="$(detect_target_platform)"
+
+  log "Preparing compose images from registries for online mode..."
+  ok "Target image platform: $TARGET_PLATFORM_RESOLVED"
+
+  local service image build
+  while IFS="$(printf '\t')" read -r service image build; do
+    [ -n "$service" ] || continue
+    [ -n "$image" ] || continue
+
+    if [ "$build" = "1" ]; then
+      prepare_online_build_service_image "$service" "$image"
+    else
+      if ! prepare_online_registry_image "$image"; then
+        :
+      fi
+    fi
+  done <<EOF_ONLINE_IMAGES
+$(get_compose_service_meta)
+EOF_ONLINE_IMAGES
+}
+
 validate_local_images() {
   if [ "$SKIP_IMAGE_CHECK" = "1" ]; then
     log "Skipping local image checks by request."

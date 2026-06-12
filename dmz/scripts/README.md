@@ -63,6 +63,16 @@ archive 경로를 직접 지정할 수도 있습니다.
 이 스크립트는 이미지만 로드합니다. 컨테이너 시작은 `preflight-dmz.sh --compose-up` 또는
 `dmz-compose.sh up`으로 분리되어 있습니다.
 
+OpenStack CI처럼 registry 접근이 가능한 테스트 환경에서는 archive load 대신
+online image mode를 사용할 수 있습니다.
+
+```bash
+DMZ_RUNTIME=podman DMZ_IMAGE_MODE=online ./scripts/preflight-dmz.sh --compose-up
+```
+
+기본값은 `DMZ_IMAGE_MODE=offline`입니다. 고객 폐쇄망 설치에서는 기존처럼
+`load-compose-images.sh`로 이미지를 먼저 로드합니다.
+
 ## 3. 사전 점검 후 실행
 
 `.env`를 준비합니다.

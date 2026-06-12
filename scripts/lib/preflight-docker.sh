@@ -48,11 +48,14 @@ DESCRIPTION
   Verify Lucy TeamCloud On-Premise installation prerequisites before running:
     docker compose up -d
 
-  This script assumes the user has already prepared:
+  In the default offline image mode, this script assumes the user has already prepared:
     - .env
     - license/license.json
     - Docker images loaded by load-compose-images.sh
     - optional SSL certificate files
+
+  In online image mode, set ONPREM_IMAGE_MODE=online to pull registry images
+  and build init-secrets during preflight.
 
 USER-FACING WRAPPER
   <project-root>/scripts/preflight-onprem.sh
@@ -119,6 +122,12 @@ ENVIRONMENT VARIABLES
 
   PLATFORM
       Alias for TARGET_PLATFORM when TARGET_PLATFORM is not set.
+
+  ONPREM_IMAGE_MODE
+      Image preparation mode. Defaults to offline.
+      Supported values:
+        offline  require images to exist locally, usually loaded by load-compose-images.sh
+        online   pull registry images and build init-secrets during preflight
 
   COMPOSE_FILES
       Explicit compose files to use, separated by colon (:).
@@ -293,6 +302,7 @@ main() {
   validate_certificates
   validate_compose_config
   validate_ports
+  prepare_online_images
   validate_local_images
   validate_image_architectures
   validate_immutable_env_lock

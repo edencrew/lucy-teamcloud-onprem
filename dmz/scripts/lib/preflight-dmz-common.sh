@@ -39,6 +39,12 @@ ENVIRONMENT VARIABLES
   DMZ_RUNTIME
       Force runtime selection. Supported values: docker, podman.
 
+  DMZ_IMAGE_MODE
+      Image preparation mode. Defaults to offline.
+      Supported values:
+        offline  require images to exist locally, usually loaded by load-compose-images.sh
+        online   pull registry images during preflight
+
 EXAMPLES
   Basic check:
     ./scripts/$SCRIPT_NAME
@@ -77,6 +83,176 @@ Run './scripts/$SCRIPT_NAME --help' for usage."
     esac
     shift
   done
+}
+
+detect_target_platform() {
+  if [ -n "${TARGET_PLATFORM:-}" ]; then
+    printf '%s' "$TARGET_PLATFORM"
+    return 0
+  fi
+
+  if [ -n "${PLATFORM:-}" ]; then
+    printf '%s' "$PLATFORM"
+    return 0
+  fi
+
+  local arch
+  arch="$(uname -m 2>/dev/null || true)"
+
+  case "$arch" in
+    x86_64|amd64)
+      printf '%s' "linux/amd64"
+      ;;
+    aarch64|arm64)
+      printf '%s' "linux/arm64"
+      ;;
+    armv7l)
+      printf '%s' "linux/arm/v7"
+      ;;
+    *)
+      printf '%s' "linux/$arch"
+      ;;
+  esac
+}
+
+validate_dmz_image_mode() {
+  DMZ_IMAGE_MODE_RESOLVED="${DMZ_IMAGE_MODE:-offline}"
+
+  case "$DMZ_IMAGE_MODE_RESOLVED" in
+    offline|online)
+      log "Image mode: $DMZ_IMAGE_MODE_RESOLVED"
+      ;;
+    *)
+      die "DMZ_IMAGE_MODE must be offline or online: $DMZ_IMAGE_MODE_RESOLVED"
+      ;;
+  esac
+}
+
+image_registry() {
+  local image="$1"
+  local first="${image%%/*}"
+
+  if [ "$first" = "$image" ]; then
+    printf '%s' "docker.io"
+    return 0
+  fi
+
+  case "$first" in
+    *.*|*:*|localhost)
+      printf '%s' "$first"
+      ;;
+    *)
+      printf '%s' "docker.io"
+      ;;
+  esac
+}
+
+ecr_region_from_registry() {
+  local registry="$1"
+
+  printf '%s\n' "$registry" | awk -F '.' '
+    {
+      for (i = 1; i <= NF - 3; i++) {
+        if ($(i + 1) == "dkr" && $(i + 2) == "ecr") {
+          print $(i + 3)
+          exit
+        }
+      }
+    }
+  '
+}
+
+print_pull_error() {
+  local image="$1"
+  local registry region
+
+  registry="$(image_registry "$image")"
+  region="$(ecr_region_from_registry "$registry")"
+
+  cat >&2 <<EOF_PULL_ERROR
+
+Failed to pull image:
+  $image
+
+Registry:
+  $registry
+
+EOF_PULL_ERROR
+
+  case "$registry" in
+    public.ecr.aws)
+      cat >&2 <<EOF_PUBLIC_ECR
+Most likely causes for public ECR:
+  - The tag is not published in public ECR.
+  - The image exists only in private ECR.
+  - The tag exists, but does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Check:
+  docker buildx imagetools inspect $image
+
+EOF_PUBLIC_ECR
+      ;;
+    *.dkr.ecr.*.amazonaws.com|*.dkr.ecr.*.amazonaws.com.cn)
+      [ -n "$region" ] || region="<region>"
+      cat >&2 <<EOF_PRIVATE_ECR
+Possible causes for AWS Private ECR:
+  - You are not logged in to this registry.
+  - The repository or tag does not exist in this private ECR registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Login example:
+  aws ecr get-login-password --region $region \\
+    | docker login --username AWS --password-stdin $registry
+
+Check:
+  docker buildx imagetools inspect $image
+
+EOF_PRIVATE_ECR
+      ;;
+    *)
+      cat >&2 <<EOF_GENERIC_REGISTRY
+Possible causes:
+  - The repository or tag does not exist in the registry.
+  - You are not logged in to a private registry.
+  - The tag does not support platform: $TARGET_PLATFORM_RESOLVED
+
+Checks:
+  docker buildx imagetools inspect $image
+  docker pull --platform $TARGET_PLATFORM_RESOLVED $image
+
+EOF_GENERIC_REGISTRY
+      ;;
+  esac
+}
+
+prepare_dmz_online_images() {
+  validate_dmz_image_mode
+
+  if [ "$DMZ_IMAGE_MODE_RESOLVED" != "online" ]; then
+    return 0
+  fi
+
+  TARGET_PLATFORM_RESOLVED="$(detect_target_platform)"
+
+  local images img
+  images="$(dmz_compose_images)"
+  [ -n "$images" ] || die "No image entries found in DMZ compose config."
+
+  log "Preparing DMZ compose images from registries for online mode..."
+  log "Target image platform: $TARGET_PLATFORM_RESOLVED"
+
+  while IFS= read -r img; do
+    [ -n "$img" ] || continue
+    log "Pulling image for online mode: $img"
+    if docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$img"; then
+      printf '  OK   %s\n' "$img"
+    else
+      print_pull_error "$img"
+      die "Failed to pull DMZ image: $img"
+    fi
+  done <<EOF_IMAGES
+$images
+EOF_IMAGES
 }
 
 check_local_images() {
@@ -123,6 +299,7 @@ preflight_dmz_main() {
   log "Validating DMZ compose config..."
   dmz_compose config --quiet
 
+  prepare_dmz_online_images
   check_local_images
 
   log "DMZ preflight passed."

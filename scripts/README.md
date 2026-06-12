@@ -10,6 +10,17 @@
 3. 폐쇄망 서버에서 사전 검증 후 서비스 실행
 ```
 
+OpenStack CI처럼 registry 접근이 가능한 테스트 환경에서는 archive load 대신
+online image mode를 사용할 수 있습니다.
+
+```bash
+ONPREM_RUNTIME=podman ONPREM_IMAGE_MODE=online \
+  ./scripts/preflight-onprem.sh --skip-resource-check --compose-up
+```
+
+기본값은 `ONPREM_IMAGE_MODE=offline`입니다. 고객 폐쇄망 설치에서는 기존처럼
+`load-compose-images.sh`로 이미지를 먼저 로드합니다.
+
 ---
 
 # 1. 파일 구조
@@ -908,7 +919,9 @@ registry 후보 선택 프롬프트를 피하고, 실행 시에는 다음 옵션
 --no-build
 ```
 
-이미지는 이미 `load-compose-images.sh`를 통해 로드되어 있어야 합니다.
+기본 offline mode에서는 이미지를 `load-compose-images.sh`를 통해 먼저 로드해야 합니다.
+온라인 테스트 환경에서는 preflight에 `ONPREM_IMAGE_MODE=online`을 지정하면 registry
+이미지를 pull하고 `init-secrets` 이미지를 build한 뒤 기존 검사를 이어갑니다.
 
 ---
 

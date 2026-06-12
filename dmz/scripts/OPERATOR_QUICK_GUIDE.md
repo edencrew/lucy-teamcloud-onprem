@@ -20,6 +20,15 @@ cd dmz
 ./scripts/preflight-dmz.sh --compose-up
 ```
 
+## Online CI 실행
+
+OpenStack CI처럼 registry 접근이 가능한 테스트 환경에서는 image archive를 로드하지 않고
+preflight가 필요한 이미지를 pull하도록 실행할 수 있습니다.
+
+```bash
+DMZ_RUNTIME=podman DMZ_IMAGE_MODE=online ./scripts/preflight-dmz.sh --compose-up
+```
+
 ## 상태 확인
 
 ```bash
