@@ -1225,21 +1225,31 @@ EOF_GENERIC_REGISTRY
   esac
 }
 
-canonical_image_for_localhost_alias() {
+normalize_online_pull_source_image() {
   local image="$1"
+  local source first
 
-  case "$image" in
-    localhost/nginx:1.26-alpine)
-      printf '%s' "nginx:1.26-alpine"
+  source="$image"
+
+  case "$source" in
+    localhost/*)
+      source="${source#localhost/}"
       ;;
-    localhost/postgres:17)
-      printf '%s' "postgres:17"
-      ;;
-    localhost/eclipse-mosquitto:2.0.22)
-      printf '%s' "eclipse-mosquitto:2.0.22"
+  esac
+
+  first="${source%%/*}"
+
+  if [ "$first" = "$source" ]; then
+    printf 'docker.io/library/%s' "$source"
+    return 0
+  fi
+
+  case "$first" in
+    *.*|*:*|localhost)
+      printf '%s' "$source"
       ;;
     *)
-      printf '%s' "$image"
+      printf 'docker.io/%s' "$source"
       ;;
   esac
 }
@@ -1260,17 +1270,7 @@ prepare_online_registry_image() {
   local image="$1"
   local source
 
-  source="$(canonical_image_for_localhost_alias "$image")"
-
-  if [ "$source" = "$image" ]; then
-    case "$image" in
-      localhost/*)
-        fail_msg "Online image mode does not know how to create localhost image: $image"
-        warn "Add an explicit alias mapping or use offline image archive loading."
-        return 1
-        ;;
-    esac
-  fi
+  source="$(normalize_online_pull_source_image "$image")"
 
   log "Pulling image for online mode: $source"
   if docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$source"; then

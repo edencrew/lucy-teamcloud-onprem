@@ -225,6 +225,35 @@ EOF_GENERIC_REGISTRY
   esac
 }
 
+normalize_online_pull_source_image() {
+  local image="$1"
+  local source first
+
+  source="$image"
+
+  case "$source" in
+    localhost/*)
+      source="${source#localhost/}"
+      ;;
+  esac
+
+  first="${source%%/*}"
+
+  if [ "$first" = "$source" ]; then
+    printf 'docker.io/library/%s' "$source"
+    return 0
+  fi
+
+  case "$first" in
+    *.*|*:*|localhost)
+      printf '%s' "$source"
+      ;;
+    *)
+      printf 'docker.io/%s' "$source"
+      ;;
+  esac
+}
+
 prepare_dmz_online_images() {
   validate_dmz_image_mode
 
@@ -234,7 +263,7 @@ prepare_dmz_online_images() {
 
   TARGET_PLATFORM_RESOLVED="$(detect_target_platform)"
 
-  local images img
+  local images img source
   images="$(dmz_compose_images)"
   [ -n "$images" ] || die "No image entries found in DMZ compose config."
 
@@ -243,12 +272,21 @@ prepare_dmz_online_images() {
 
   while IFS= read -r img; do
     [ -n "$img" ] || continue
-    log "Pulling image for online mode: $img"
-    if docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$img"; then
-      printf '  OK   %s\n' "$img"
+    source="$(normalize_online_pull_source_image "$img")"
+    log "Pulling image for online mode: $source"
+    if docker pull --platform "$TARGET_PLATFORM_RESOLVED" "$source"; then
+      printf '  OK   %s\n' "$source"
     else
-      print_pull_error "$img"
-      die "Failed to pull DMZ image: $img"
+      print_pull_error "$source"
+      die "Failed to pull DMZ image: $source"
+    fi
+
+    if [ "$source" != "$img" ]; then
+      if docker tag "$source" "$img"; then
+        printf '  OK   Tagged image alias: %s <- %s\n' "$img" "$source"
+      else
+        die "Failed to tag DMZ image alias: $img <- $source"
+      fi
     fi
   done <<EOF_IMAGES
 $images
