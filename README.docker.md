@@ -280,25 +280,6 @@ SELinux Enforcing 환경에서는 label도 확인하세요.
 sudo chcon -Rt container_file_t postgres/initdb postgres/data
 ```
 
-### broker 8080 host port 충돌
-
-`compose.docker.yml`은 broker WebSocket port로 host `8080`을 publish합니다. 충돌하면
-사용 중인 프로세스를 확인하고 host port만 변경하세요.
-
-```bash
-ss -ltnp 'sport = :8080'
-```
-
-컨테이너 내부 port는 그대로 두고 왼쪽 host port만 바꿉니다.
-
-```yaml
-services:
-  broker:
-    ports:
-      - "1883:1883"
-      - "18081:8080"
-```
-
 ### gateway port mapping
 
 gateway nginx는 컨테이너 내부에서 80/443을 listen합니다. host port를 바꿀 때도

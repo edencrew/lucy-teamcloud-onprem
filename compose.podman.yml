@@ -83,9 +83,6 @@ services:
     image: docker.io/library/eclipse-mosquitto:2.0.22
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
-    ports:
-      - "1883:1883"
-      - "8080:8080"
     volumes:
       - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,z
       - ./broker/data:/mosquitto/data:z
@@ -138,7 +135,7 @@ services:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.13
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.14
     platform: ${TARGET_PLATFORM:-linux/amd64}
     user: "0:0"
     restart: unless-stopped
@@ -181,7 +178,7 @@ services:
       - internal-network
 
   tc-fe:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.13
+    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.14
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
