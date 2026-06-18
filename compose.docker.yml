@@ -5,22 +5,21 @@ networks:
     external: false
 
 services:
-  # 인스턴스별 시크릿/self-signed 인증서 자동 생성 (첫 부팅 시 1회).
-  # ./secrets/secrets.env, ./nginx/certs/server.{crt,key} 가 이미 있으면
-  # 각각 no-op (idempotent). 정식 인증서로 교체하면 그대로 보존됨.
   init-secrets:
-    image: alpine:3.20
+    image: lucy-teamcloud-onprem-init-secrets:offline
+    build:
+      context: ./init-secrets
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: "no"
     environment:
       EXTERNAL_URL: ${EXTERNAL_URL}
     volumes:
       - ./secrets:/secrets
       - ./nginx/certs:/certs
-      - ./scripts/init-secrets.sh:/init-secrets.sh:ro
-    command: ["/bin/sh", "/init-secrets.sh"]
 
   gw:
-    image: nginx:1.26-alpine
+    image: docker.io/library/nginx:1.26-alpine
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
       - internal-network
@@ -29,12 +28,14 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro  # 인증서 교체
+      - ./nginx/certs:/etc/nginx/certs:ro
     depends_on:
       init-secrets:
         condition: service_completed_successfully
       db:
         condition: service_healthy
+      broker:
+        condition: service_started
       git:
         condition: service_started
       auth-be:
@@ -48,6 +49,7 @@ services:
 
   git:
     image: docker.gitea.com/gitea:1.25.3
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -74,7 +76,8 @@ services:
     entrypoint: ["/bin/sh", "/gitea-entrypoint.sh"]
 
   db:
-    image: postgres:17
+    image: docker.io/library/postgres:17
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -93,26 +96,16 @@ services:
       - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
 
   broker:
-    build:
-      context: ./broker
-    # nodename(VerneMQ@broker) 의 host 부분이 컨테이너 hostname 과 반드시 일치해야
-    # Erlang distribution 이 정상 기동됨. 두 값은 한 쌍으로 관리.
-    hostname: broker
-    user: "0:0"
+    image: docker.io/library/eclipse-mosquitto:2.0.22
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
-    environment:
-      DOCKER_VERNEMQ_NODENAME: VerneMQ@broker
-      # 디버깅 시 override.yml 에서 debug 로 올릴 수 있도록 compose 에 노출
-      DOCKER_VERNEMQ_LOG__CONSOLE: both
-      DOCKER_VERNEMQ_LOG__CONSOLE__LEVEL: info
-    ports:  # 호스트 포트는 .env 의 BROKER_*_PORT 로 조정
-      - "1883:1883"      # MQTT
-      - "8080:8080"        # WebSocket
-      - "8081:8081"       # Secured WebSocket
-      - "8888:8888"    # HTTP status port
+    ports:
+      - "1883:1883"
+      - "8080:8080"
     volumes:
-      - ./broker/logs:/vernemq/log
-      - ./broker/data:/vernemq/data
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/data:/mosquitto/data
+      - ./broker/logs:/mosquitto/log
     networks:
       - internal-network
     logging:
@@ -123,6 +116,7 @@ services:
 
   auth-be:
     image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.9
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -149,12 +143,7 @@ services:
       ADMIN_NAME: ${LUCY_ADMIN_NAME}
       JWT_EXPIRES_TIME: 60m
       OIDC_ISSUER: ${EXTERNAL_URL}/auth
-      # JWT_*, OIDC_COOKIE_KEYS, OIDC_CLIENT_SECRET, OIDC_CLIENTS_PRESET 은
-      # init-secrets 가 생성한 /run/secrets/secrets.env 와 auth-entrypoint.sh 에서 export 됨
       EXTERNAL_URL: ${EXTERNAL_URL}
-      # BE-to-BE HTTPS 호출(JWKS 검증 등) 시 nginx 가 제시하는 인증서를 신뢰하도록
-      # nginx/certs/server.crt 를 Node 의 추가 CA 로 등록. self-signed/사설 CA 인증서를
-      # 그대로 둬도 동작하며, 공인 인증서로 교체해도 무해.
       NODE_EXTRA_CA_CERTS: /certs/server.crt
     volumes:
       - ./secrets:/run/secrets:ro
@@ -182,8 +171,6 @@ services:
       SERVICE_ENV: onprem
       SERVICE_PORT: 80
       TEAMCLOUD_URL: ${EXTERNAL_URL}
-      # OIDC redirect 는 브라우저가 이 URL 로 이동하므로 외부 URL 이어야 함.
-      # BE-to-BE (token 교환, JWKS 검증) 호출도 같은 URL 로 나가 nginx 경유로 auth-be 에 도달.
       AUTH_SERVER_URL: ${EXTERNAL_URL}/auth
       DB_HOST: db
       DB_PORT: 5432
@@ -191,20 +178,14 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE: lucy_teamcloud
       DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
-      GIT_PROVIDER: gitea  # onprem 은 gitea 고정
-      GIT_HOST: http://git
+      GIT_PROVIDER: gitea
+      GIT_HOST: http://git:18080
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
       GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
       WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
       OIDC_CLIENT_ID: lucy-teamcloud-oidc-client-id
-      # OIDC_CLIENT_SECRET 은 /run/secrets/secrets.env 와 tc-entrypoint.sh 에서 export 됨
-      # broker 주소 노출용 (deprecated, tc-be 가 엔드포인트로 제공 예정)
-      # BROKER_WS_URL 기본값은 EXTERNAL_URL 에 /mqtt 를 붙인 형태 (nginx 의 /mqtt/ 리버스 프록시 경유).
-      # 필요 시 .env 의 BROKER_WS_URL 로 명시적 override 가능.
       BROKER_WS_URL: ${BROKER_WS_URL}
       PUBLIC_BROKER_WS_URL: ${PUBLIC_BROKER_WS_URL}
-      # BE-to-BE HTTPS 호출(토큰 교환 등) 시 nginx 가 제시하는 인증서를 신뢰하도록
-      # nginx/certs/server.crt 를 Node 의 추가 CA 로 등록.
       NODE_EXTRA_CA_CERTS: /certs/server.crt
     volumes:
       - ./secrets:/run/secrets:ro
@@ -224,6 +205,7 @@ services:
 
   auth-fe:
     image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.11
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
       - internal-network

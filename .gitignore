@@ -1,12 +1,16 @@
 .env
+.DS_Store
 .idea/
 gw-data/
-docker-compose.override.yml
 secrets/secrets.env
 license/license.json
+auth/logs/
+tc/logs/
 broker/data/
 broker/logs/
 git/data/
 postgres/data/
 nginx/certs/*
 !nginx/certs/.gitkeep
+*.bak
+images/

@@ -1,0 +1,195 @@
+name: lucy-teamcloud-onprem
+
+networks:
+  internal-network:
+    external: false
+
+services:
+  gw:
+    image: docker.io/library/nginx:1.26-alpine
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    networks:
+      - internal-network
+    ports:
+      - "18080:80"
+      - "18443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ./nginx/certs:/etc/nginx/certs:ro,z
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_started
+      git:
+        condition: service_started
+      auth-be:
+        condition: service_healthy
+      auth-fe:
+        condition: service_started
+      tc-be:
+        condition: service_healthy
+      tc-fe:
+        condition: service_started
+
+  git:
+    image: docker.gitea.com/gitea:1.25.3
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - LUCY_ADMIN_NAME=${LUCY_ADMIN_NAME}
+      - LUCY_ADMIN_PASSWORD=${LUCY_ADMIN_PASSWORD}
+      - EXTERNAL_URL=${EXTERNAL_URL}
+      - USER_UID=${HOST_UID:-1000}
+      - USER_GID=${HOST_GID:-1000}
+      - TZ=${TZ:-UTC}
+      - GITEA__database__USER=${DB_USERNAME}
+      - GITEA__database__PASSWD=${DB_PASSWORD}
+      - GITEA__server__DISABLE_SSH=true
+    networks:
+      - internal-network
+    volumes:
+      - ./git/data:/data:z
+      - ./git/app.ini:/app.ini.default:ro,z
+      - ./git/gitea-entrypoint.sh:/gitea-entrypoint.sh:ro,z
+      - ./secrets:/run/secrets:ro,z
+    entrypoint: ["/bin/sh", "/gitea-entrypoint.sh"]
+
+  db:
+    image: docker.io/library/postgres:17
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      - POSTGRES_PASSWORD=${DB_ROOT_PASSWORD}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TZ=${TZ:-UTC}
+    networks:
+      - internal-network
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data:z
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro,z
+
+  broker:
+    image: docker.io/library/eclipse-mosquitto:2.0.22
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "8080:8080"
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,z
+      - ./broker/data:/mosquitto/data:z
+      - ./broker/logs:/mosquitto/log:z
+    networks:
+      - internal-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  auth-be:
+    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.9
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    user: "0:0"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      FRONTEND_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_auth
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_auth"
+      ADMIN_EMAIL: ${LUCY_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${LUCY_ADMIN_PASSWORD}
+      ADMIN_NAME: ${LUCY_ADMIN_NAME}
+      JWT_EXPIRES_TIME: 60m
+      OIDC_ISSUER: ${EXTERNAL_URL}/auth
+      EXTERNAL_URL: ${EXTERNAL_URL}
+      NODE_EXTRA_CA_CERTS: /certs/server.crt
+    volumes:
+      - ./secrets:/run/secrets:ro,z
+      - ./auth/auth-entrypoint.sh:/auth-entrypoint.sh:ro,z
+      - ./nginx/certs/server.crt:/certs/server.crt:ro,z
+      - ./auth/logs:/app/logs:z
+    entrypoint: ["/bin/sh", "/auth-entrypoint.sh"]
+    networks:
+      - internal-network
+
+  tc-be:
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.13
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    user: "0:0"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      SERVICE_ENV: onprem
+      SERVICE_PORT: 80
+      TEAMCLOUD_URL: ${EXTERNAL_URL}
+      AUTH_SERVER_URL: ${EXTERNAL_URL}/auth
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE: lucy_teamcloud
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
+      GIT_PROVIDER: gitea
+      GIT_HOST: http://git:18080
+      GIT_USERNAME: ${LUCY_ADMIN_NAME}
+      GIT_PASSWORD: ${LUCY_ADMIN_PASSWORD}
+      WEBHOOK_URL: "http://tc-be/api/webhooks/gitea"
+      OIDC_CLIENT_ID: lucy-teamcloud-oidc-client-id
+      BROKER_WS_URL: ${BROKER_WS_URL}
+      PUBLIC_BROKER_WS_URL: ${PUBLIC_BROKER_WS_URL}
+      NODE_EXTRA_CA_CERTS: /certs/server.crt
+    volumes:
+      - ./secrets:/run/secrets:ro,z
+      - ./tc/tc-entrypoint.sh:/tc-entrypoint.sh:ro,z
+      - ./license:/app/license:ro,z
+      - ./nginx/certs/server.crt:/certs/server.crt:ro,z
+      - ./tc/logs:/app/logs:z
+    entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
+    networks:
+      - internal-network
+
+  tc-fe:
+    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.13
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    networks:
+      - internal-network
+
+  auth-fe:
+    image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.11
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    networks:
+      - internal-network
