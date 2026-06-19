@@ -248,6 +248,42 @@ PUBLIC_BROKER_WS_URL=wss://your-domain.com:8443/mqtt
 
 ## 10. 알려진 문제
 
+### 이미지 export 중 `unknown flag: --platform` 오류
+
+아래 오류가 나오면 이미지를 만드는 PC의 Docker가 오래된 상태입니다.
+
+```text
+unknown flag: --platform
+See 'docker save --help'.
+```
+
+이미지 다운로드 문제가 아닙니다. Docker Desktop 또는 Docker Engine을 최신 버전으로
+업데이트한 뒤, 새 소스를 다시 받고 export를 다시 실행하세요.
+
+```bash
+docker save --help | grep -- --platform
+git pull
+./scripts/export-compose-images-docker.sh
+```
+
+### 이미지 export 중 `does not provide the specified platform` 오류
+
+아래 오류가 나오면 이미지를 만드는 PC에서 보조 이미지가 서버용 `linux/amd64`가 아닌
+다른 환경으로 만들어진 상태입니다.
+
+```text
+does not provide the specified platform (linux/amd64)
+```
+
+Docker Desktop 또는 Docker Engine을 최신 버전으로 업데이트하고, `buildx`가 동작하는지
+확인한 뒤 새 소스를 다시 받고 export를 다시 실행하세요.
+
+```bash
+docker buildx version
+git pull
+./scripts/export-compose-images-docker.sh
+```
+
 ### 브라우저 캐시와 OIDC code 만료
 
 서버는 새 버전인데 브라우저가 이전 화면을 계속 보여주거나 로그인 중
