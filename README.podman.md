@@ -434,6 +434,25 @@ Chrome DevTools -> Application -> Service Workers -> Unregister
 Chrome DevTools -> Application -> Storage -> Clear site data
 ```
 
+### Compose 실행 화면에서 `db-1 Error`만 보일 때
+
+이미지 load가 `Load complete.`로 끝난 뒤 실행 화면에 아래처럼 보일 수 있습니다.
+
+```text
+Container lucy-teamcloud-onprem-db-1  Error
+```
+
+이 화면만으로는 정확한 원인을 알 수 없습니다. 이미지 load 실패로 판단하지 말고,
+먼저 DB 컨테이너 로그를 확인하세요.
+
+```bash
+podman compose --env-file .env -f compose.podman.yml ps -a
+podman compose --env-file .env -f compose.podman.yml logs --tail=100 db
+```
+
+로그에 `/docker-entrypoint-initdb.d/` 또는 `permission denied`가 보이면 아래
+`postgres/initdb` 권한 문제 해결 절차를 진행하세요.
+
 ### `postgres/initdb` permission denied
 
 다음 오류는 host 파일 권한 또는 SELinux label 문제입니다.
