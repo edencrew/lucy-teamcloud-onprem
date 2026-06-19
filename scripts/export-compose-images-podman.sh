@@ -54,6 +54,29 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+require_docker_save_platform() {
+  docker save --help 2>&1 | grep -q -- '--platform' || die "Docker CLI does not support 'docker save --platform'. Install or update to a recent Docker Desktop or Docker Engine version."
+}
+
+require_docker_buildx() {
+  docker buildx version >/dev/null 2>&1 || die "Docker buildx is required. Install or update to a recent Docker Desktop or Docker Engine version."
+}
+
+image_platform() {
+  docker image inspect \
+    --format '{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}' \
+    "$1"
+}
+
+assert_image_platform() {
+  local image="$1"
+  local expected="$2"
+  local actual
+
+  actual="$(image_platform "$image" 2>/dev/null)" || die "Built image not found: $image"
+  [ "$actual" = "$expected" ] || die "Built image has wrong platform: $image is $actual, expected $expected"
+}
+
 script_dir() {
   cd -P "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd
 }
@@ -89,6 +112,8 @@ done
 require_cmd docker
 docker compose version >/dev/null 2>&1 || die "Docker Compose plugin is required: docker compose version"
 docker info >/dev/null 2>&1 || die "Docker daemon is not reachable"
+require_docker_save_platform
+require_docker_buildx
 
 SCRIPT_DIR="$(script_dir)"
 ROOT_DIR="$(resolve_root "$SCRIPT_DIR")"
@@ -127,8 +152,13 @@ while IFS= read -r image; do
   fi
 done < "$TMP_IMAGES"
 
-log "Building local images..."
-docker build --platform "$TARGET_PLATFORM" -t "$BUILD_IMAGE" "$ROOT_DIR/init-secrets"
+log "Building local image: $BUILD_IMAGE"
+docker buildx build \
+  --platform "$TARGET_PLATFORM" \
+  --load \
+  -t "$BUILD_IMAGE" \
+  "$ROOT_DIR/init-secrets"
+assert_image_platform "$BUILD_IMAGE" "$TARGET_PLATFORM"
 
 IMAGES_FILE="$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.images.txt"
 ARCHIVE_IMAGES_FILE="$OUTPUT_DIR/${OUTPUT_NAME%.tar.gz}.archive-images.txt"
