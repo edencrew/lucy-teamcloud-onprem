@@ -216,6 +216,27 @@ images/lucy-teamcloud-onprem-docker-images-linux-amd64.*
 `broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Docker용 archive만
 로드하세요.
 
+기동 전에 `compose.docker.yml`의 `gw.ports`와 `.env`의 접속 URL 포트가 같은지
+확인하세요. 예를 들어 외부 접속 주소가 `http://121.65.247.235:58081`이면
+`compose.docker.yml`의 `gw` 서비스는 `58081:80`을 publish해야 합니다.
+
+```yaml
+services:
+  gw:
+    ports:
+      - "58081:80"
+```
+
+```env
+EXTERNAL_URL=http://121.65.247.235:58081
+BROKER_WS_URL=ws://121.65.247.235:58081/mqtt
+PUBLIC_BROKER_WS_URL=ws://121.65.247.235:58081/mqtt
+```
+
+```bash
+grep -n '58081\|121.65.247.235' .env compose.docker.yml
+```
+
 ```bash
 ./scripts/load-compose-images-docker.sh ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz
 
