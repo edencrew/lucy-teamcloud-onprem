@@ -149,14 +149,86 @@ docker compose --env-file .env -f compose.docker.yml down
 데이터는 로컬 디렉터리(`postgres/data/`, `git/data/`)에 보존됩니다. 운영
 환경에서 `down -v`는 사용하지 마세요.
 
-## 6. 업데이트 및 재실행
+## 6. 버전 업데이트 및 재실행
+
+이미지 버전은 `compose.docker.yml`의 `image:` tag가 기준입니다. 버전을 올릴 때는
+새 소스 전체를 먼저 반영한 뒤 이미지를 pull 또는 load하세요.
+
+현재 배포 이미지는 `linux/amd64` 서버 기준입니다. arm64 서버 native 실행은 현재
+지원하지 않습니다. arm64 지원이 필요하면 Edencrew ECR 앱 이미지가 arm64로 publish된
+뒤 별도 안내에 따라 진행합니다.
+
+운영 환경에서 `down -v`는 사용하지 마세요. 업데이트 전에는 `.env`,
+`license/license.json`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
+`broker/data/`, `broker/logs/`를 백업하세요.
+
+### 6.1 public망 Docker 서버
+
+서버가 registry에 직접 접근할 수 있으면 아래 순서로 업데이트합니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml pull
+cd /path/to/lucy-teamcloud-onprem
+git pull
+
+docker compose --env-file .env -f compose.docker.yml pull --ignore-buildable
 docker compose --env-file .env -f compose.docker.yml up -d --build
 ```
 
-`.env` 파일이나 설정 파일 변경 후에도 같은 명령으로 재시작합니다.
+`compose.docker.yml`의 gateway port를 직접 수정해서 운영 중이면, 새 소스 반영 이후에도
+`gw.ports`와 `.env`의 URL host/port가 계속 일치하는지 확인하세요.
+
+```bash
+docker compose --env-file .env -f compose.docker.yml ps
+docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
+```
+
+### 6.2 폐쇄망 Docker 서버
+
+폐쇄망 서버는 registry에 직접 접근할 수 없으므로, 온라인 PC에서 새 소스 전체를 받은
+뒤 이미지 archive를 다시 만듭니다. 폐쇄망 서버에는 필요한 파일만 옮기고, 기존 설치
+디렉터리 전체를 덮어쓰지 마세요.
+
+온라인 PC에서 처음 소스를 받는 경우:
+
+```bash
+git clone https://github.com/edencrew/lucy-teamcloud-onprem.git
+cd lucy-teamcloud-onprem
+./scripts/export-compose-images-docker.sh
+```
+
+이미 받은 `lucy-teamcloud-onprem` 디렉터리가 있으면 해당 디렉터리에서 업데이트한 뒤
+export합니다.
+
+```bash
+cd lucy-teamcloud-onprem
+git pull
+./scripts/export-compose-images-docker.sh
+```
+
+폐쇄망 Docker 서버의 기존 설치 디렉터리에는 아래 파일만 교체 또는 추가합니다.
+
+```text
+compose.docker.yml
+images/lucy-teamcloud-onprem-docker-images-linux-amd64.*
+```
+
+기존 `.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
+`broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Docker용 archive만
+로드하세요.
+
+```bash
+./scripts/load-compose-images-docker.sh ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz
+
+docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+```
+
+폐쇄망 업데이트에서도 `compose.docker.yml`의 gateway port와 `.env`의
+`EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`이 같은 host/port를 가리키는지
+확인하세요.
+
+이미지 버전 변경 없이 `.env` 파일이나 설정 파일만 변경한 경우에는 이미지를 다시
+pull/load하지 않고 재실행만 합니다. public망은 `up -d --build`, 폐쇄망은
+`up -d --pull never --no-build`를 사용하세요.
 
 ## 7. Offline Image Flow
 
@@ -258,10 +330,11 @@ See 'docker save --help'.
 ```
 
 이미지 다운로드 문제가 아닙니다. Docker Desktop 또는 Docker Engine을 최신 버전으로
-업데이트한 뒤, 새 소스를 다시 받고 export를 다시 실행하세요.
+업데이트한 뒤 새 소스를 다시 받고 export를 다시 실행하세요.
 
 ```bash
 docker save --help | grep -- --platform
+cd lucy-teamcloud-onprem
 git pull
 ./scripts/export-compose-images-docker.sh
 ```
@@ -280,6 +353,7 @@ Docker Desktop 또는 Docker Engine을 최신 버전으로 업데이트하고, `
 
 ```bash
 docker buildx version
+cd lucy-teamcloud-onprem
 git pull
 ./scripts/export-compose-images-docker.sh
 ```
@@ -294,6 +368,25 @@ service worker를 삭제하세요.
 Chrome DevTools -> Application -> Service Workers -> Unregister
 Chrome DevTools -> Application -> Storage -> Clear site data
 ```
+
+### Compose 실행 화면에서 `db-1 Error`만 보일 때
+
+이미지 load가 `Load complete.`로 끝난 뒤 실행 화면에 아래처럼 보일 수 있습니다.
+
+```text
+Container lucy-teamcloud-onprem-db-1  Error
+```
+
+이 화면만으로는 정확한 원인을 알 수 없습니다. 이미지 load 실패로 판단하지 말고,
+먼저 DB 컨테이너 로그를 확인하세요.
+
+```bash
+docker compose --env-file .env -f compose.docker.yml ps -a
+docker compose --env-file .env -f compose.docker.yml logs --tail=100 db
+```
+
+로그에 `/docker-entrypoint-initdb.d/` 또는 `permission denied`가 보이면 아래
+`postgres/initdb` 권한 문제 해결 절차를 진행하세요.
 
 ### `postgres/initdb` permission denied
 
