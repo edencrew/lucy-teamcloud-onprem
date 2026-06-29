@@ -167,6 +167,28 @@ images/lucy-teamcloud-onprem-podman-images-linux-amd64.*
 `broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Podman용 archive만
 로드하세요.
 
+기동 전에 `compose.podman.yml`의 `gw.ports`와 `.env`의 접속 URL 포트가 같은지
+확인하세요. rootless Podman 기본값을 사용하면 gateway는 `18080:80`, `18443:443`을
+publish합니다.
+
+```yaml
+services:
+  gw:
+    ports:
+      - "18080:80"
+      - "18443:443"
+```
+
+```env
+EXTERNAL_URL=http://your-domain-or-ip:18080
+BROKER_WS_URL=ws://your-domain-or-ip:18080/mqtt
+PUBLIC_BROKER_WS_URL=ws://your-domain-or-ip:18080/mqtt
+```
+
+```bash
+grep -n '18080\|your-domain-or-ip' .env compose.podman.yml
+```
+
 ```bash
 ./scripts/load-compose-images-podman.sh ./images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz
 
