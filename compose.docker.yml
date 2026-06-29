@@ -153,6 +153,7 @@ services:
 
   tc-be:
     image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.16
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     depends_on:
       init-secrets:
@@ -196,6 +197,7 @@ services:
 
   tc-fe:
     image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.14
+    platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
       - internal-network
