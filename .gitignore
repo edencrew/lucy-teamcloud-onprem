@@ -12,5 +12,9 @@ git/data/
 postgres/data/
 nginx/certs/*
 !nginx/certs/.gitkeep
+dmz/.env
+dmz/certs/*
+!dmz/certs/.gitkeep
+dmz/images/
 *.bak
 images/

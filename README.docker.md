@@ -8,6 +8,9 @@
 
 ## 1. 환경 설정
 
+이 문서는 TeamCloud 본체가 실행되는 internal/onprem 서버 기준입니다. DMZ 서버는
+별도 서버이며 `dmz/README.docker.md`를 따릅니다.
+
 ### 1.1 `.env` 파일 생성
 
 `.env.example` 파일을 복사하여 `.env` 파일을 생성합니다.
@@ -53,12 +56,107 @@ TZ=Asia/Seoul
 | 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요. 예: `DB_PASSWORD="P@ss!word"` |
 | Linux 서버 | `HOST_UID`, `HOST_GID`를 compose 실행 계정의 `id -u`, `id -g` 값으로 설정 |
 
-Docker 기본 compose는 gateway를 `80:80`, `443:443`으로 publish합니다. `.env`의
-`EXTERNAL_URL` port를 바꿔도 Docker publish port는 자동으로 바뀌지 않습니다. 다른
-host port를 쓰려면 [gateway port mapping](#gateway-port-mapping)에 맞춰
-`compose.docker.yml`의 `gw.ports`와 `.env` URL을 함께 수정하세요.
+### 1.4 운영 port 결정
 
-### 1.4 계정 정보 변경 불가 안내
+Docker 기본 compose는 gateway를 `80:80`, `443:443`으로 publish합니다. 실제 운영에서
+다른 host port를 써야 하면 서비스를 실행하기 전에 `compose.docker.yml`의 `gw.ports`와
+`.env` URL을 함께 수정하세요. `.env`의 `EXTERNAL_URL` port만 바꿔도 Docker publish
+port는 자동으로 바뀌지 않습니다.
+
+아래 placeholder는 설명용입니다. 실제 `compose.docker.yml`과 `.env`에는 `<...>`를
+그대로 넣지 말고 운영 환경의 실제 host/domain과 숫자 port로 바꿔 입력하세요.
+
+| Placeholder | 의미 |
+|-------------|------|
+| `<ONPREM_HOST>` | internal/onprem 서버 host 또는 domain |
+| `<ONPREM_HTTP_PORT>` | onprem gateway HTTP host port |
+| `<ONPREM_HTTPS_PORT>` | onprem gateway HTTPS host port |
+| `<DMZ_HOST>` | DMZ 서버 host 또는 domain |
+| `<DMZ_WS_PORT>` | DMZ plain WS host port |
+| `<DMZ_WSS_PORT>` | DMZ WSS host port |
+
+gateway nginx는 컨테이너 내부에서 80/443을 listen합니다. host port를 바꿀 때도 오른쪽
+컨테이너 port `:80`, `:443`은 유지하세요.
+
+```yaml
+services:
+  gw:
+    ports:
+      - "<ONPREM_HTTP_PORT>:80"
+      - "<ONPREM_HTTPS_PORT>:443"
+```
+
+실제 입력 예:
+
+```yaml
+ports:
+  - "8080:80"
+  - "8443:443"
+```
+
+HTTPS 운영 예:
+
+```env
+EXTERNAL_URL=https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>
+BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt
+PUBLIC_BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt
+```
+
+HTTP만 쓰는 테스트 환경이면 `https/wss` 대신 `http/ws`를 쓰고
+`<ONPREM_HTTP_PORT>`를 사용하세요.
+
+방화벽은 단일 onprem 서버 구성 기준으로 client -> onprem gateway host port만
+허용하면 됩니다. DB port `5432`, broker port `1883`, broker WebSocket port `8080`은
+외부에 열지 마세요.
+
+### 1.5 DMZ를 사용하는 경우
+
+DMZ는 TeamCloud 전체가 아니라 MQTT-over-WebSocket `/mqtt`만 외부에 노출합니다.
+TeamCloud 화면/API/Auth/Git 접속 주소는 onprem gateway URL로 유지하고, 외부
+클라이언트가 broker에 붙는 주소만 DMZ URL로 분리합니다.
+
+internal/onprem 서버의 `.env`에서는 `EXTERNAL_URL`과 `BROKER_WS_URL`을 onprem gateway
+주소로 유지하고, `PUBLIC_BROKER_WS_URL`만 DMZ 서버 주소로 설정합니다. DMZ 서버의
+port는 DMZ 서버의 compose 파일에서 별도로 설정합니다.
+
+DMZ를 쓰지 않는 단일 서버 구성:
+
+```env
+EXTERNAL_URL=https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>
+BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt
+PUBLIC_BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt
+```
+
+DMZ WSS를 사용하는 구성:
+
+```env
+EXTERNAL_URL=https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>
+BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt
+PUBLIC_BROKER_WS_URL=wss://<DMZ_HOST>:<DMZ_WSS_PORT>/mqtt
+```
+
+DMZ plain WS를 non-standard port로 사용하는 테스트 구성:
+
+```env
+EXTERNAL_URL=http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>
+BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
+PUBLIC_BROKER_WS_URL=ws://<DMZ_HOST>:<DMZ_WS_PORT>/mqtt
+```
+
+onprem `compose.docker.yml`의 gateway port와 DMZ compose의 gateway port는 서로
+다른 서버의 설정입니다. onprem port를 바꿨다고 DMZ port가 바뀌지 않고, DMZ port를
+바꿨다고 onprem port가 바뀌지 않습니다.
+
+DMZ 구성의 방화벽은 최소 아래 방향만 허용하세요.
+
+- client -> internal/onprem 서버 UI/API gateway port
+- mobile/client -> DMZ 서버 `/mqtt` gateway port
+- DMZ 서버 -> internal/onprem 서버 `EXTERNAL_URL`/`BROKER_WS_URL` gateway port
+
+internal broker port `1883`, broker WebSocket port `8080`, DB port `5432`는 DMZ나
+외부 client에 직접 열지 마세요.
+
+### 1.6 계정 정보 변경 불가 안내
 
 아래 항목들은 최초 실행 시에만 적용됩니다. 서비스 실행 후 `.env` 파일을 수정해도
 기존 데이터베이스와 관리자 계정에는 반영되지 않습니다.
@@ -174,8 +272,8 @@ docker compose --env-file .env -f compose.docker.yml pull --ignore-buildable
 docker compose --env-file .env -f compose.docker.yml up -d --build
 ```
 
-`compose.docker.yml`의 gateway port를 직접 수정해서 운영 중이면, 새 소스 반영 이후에도
-`gw.ports`와 `.env`의 URL host/port가 계속 일치하는지 확인하세요.
+`compose.docker.yml`의 gateway port를 직접 수정해서 운영 중이면, 새 소스 반영 이후
+실행 전에 `gw.ports`와 `.env`의 URL host/port가 계속 일치하는지 확인하세요.
 
 ```bash
 docker compose --env-file .env -f compose.docker.yml ps
@@ -216,25 +314,34 @@ images/lucy-teamcloud-onprem-docker-images-linux-amd64.*
 `broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Docker용 archive만
 로드하세요.
 
-기동 전에 `compose.docker.yml`의 `gw.ports`와 `.env`의 접속 URL 포트가 같은지
-확인하세요. 예를 들어 외부 접속 주소가 `http://your-domain-or-ip:8080`이면
-`compose.docker.yml`의 `gw` 서비스는 `8080:80`을 publish해야 합니다.
+기동 전에 `compose.docker.yml`의 `gw.ports`와 `.env`의 접속 URL port가 같은지
+확인하세요. 외부 접속 주소가 `http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>`이면
+`compose.docker.yml`의 `gw` 서비스는 `<ONPREM_HTTP_PORT>:80`을 publish해야 합니다.
+`<...>` 값은 설명용 placeholder이므로 실제 파일에는 운영 host와 숫자 port로 바꿔
+입력하세요.
 
 ```yaml
 services:
   gw:
     ports:
-      - "8080:80"
+      - "<ONPREM_HTTP_PORT>:80"
+```
+
+실제 입력 예:
+
+```yaml
+ports:
+  - "8080:80"
 ```
 
 ```env
-EXTERNAL_URL=http://your-domain-or-ip:8080
-BROKER_WS_URL=ws://your-domain-or-ip:8080/mqtt
-PUBLIC_BROKER_WS_URL=ws://your-domain-or-ip:8080/mqtt
+EXTERNAL_URL=http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>
+BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
+PUBLIC_BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
 ```
 
 ```bash
-grep -n '8080\|your-domain-or-ip' .env compose.docker.yml
+grep -n 'ports:\|EXTERNAL_URL\|BROKER_WS_URL\|PUBLIC_BROKER_WS_URL' .env compose.docker.yml
 ```
 
 ```bash
@@ -319,25 +426,10 @@ docker compose --env-file .env -f compose.docker.yml config
 
 ### 포트 충돌
 
-`compose.docker.yml`은 기본적으로 `80:80`, `443:443`을 publish합니다. 포트를
-바꾸려면 `compose.docker.yml`의 `gw.ports`와 `.env`의 `EXTERNAL_URL`,
-`BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`을 같은 host/port로 맞추세요.
-
-예:
-
-```yaml
-services:
-  gw:
-    ports:
-      - "8080:80"
-      - "8443:443"
-```
-
-```env
-EXTERNAL_URL=https://your-domain.com:8443
-BROKER_WS_URL=wss://your-domain.com:8443/mqtt
-PUBLIC_BROKER_WS_URL=wss://your-domain.com:8443/mqtt
-```
+`compose.docker.yml`의 `gw.ports`가 이미 다른 프로세스가 사용 중인 host port를
+publish하면 gateway가 시작되지 않습니다. 운영 port를 바꿀 때는
+[운영 port 결정](#14-운영-port-결정)의 순서대로 compose `gw.ports`와 `.env` URL을
+같이 맞추세요.
 
 ## 10. 알려진 문제
 
@@ -428,17 +520,4 @@ SELinux Enforcing 환경에서는 label도 확인하세요.
 
 ```bash
 sudo chcon -Rt container_file_t postgres/initdb postgres/data
-```
-
-### gateway port mapping
-
-gateway nginx는 컨테이너 내부에서 80/443을 listen합니다. host port를 바꿀 때도
-오른쪽 컨테이너 port는 유지하세요.
-
-```yaml
-services:
-  gw:
-    ports:
-      - "8080:80"
-      - "8443:443"
 ```

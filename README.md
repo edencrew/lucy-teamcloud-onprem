@@ -15,6 +15,13 @@ compose 파일로 서비스를 실행합니다.
 compose.docker.yml   # Docker용 standalone compose
 compose.podman.yml   # Podman용 standalone compose, SELinux :z mount 포함
 compose.podman.init-secrets.yml
+dmz/
+  compose.docker.yml      # Docker용 plain WS 기본 compose
+  compose.docker.wss.yml  # Docker용 WSS compose
+  compose.podman.yml      # Podman용 plain WS 기본 compose
+  compose.podman.wss.yml  # Podman용 WSS compose
+  README.docker.md
+  README.podman.md
 scripts/
   export-compose-images-docker.sh
   export-compose-images-podman.sh
@@ -32,6 +39,10 @@ cp /path/to/license.json license/license.json
 
 `.env`의 `EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`은 실제
 사용자가 접속하는 host/port와 일치해야 합니다.
+
+상세 README의 `<ONPREM_HOST>`, `<ONPREM_HTTP_PORT>`, `<ONPREM_HTTPS_PORT>`,
+`<DMZ_HOST>`, `<DMZ_WS_PORT>`, `<DMZ_WSS_PORT>`는 설명용 placeholder입니다. 실제
+`.env`와 compose 파일에는 운영 환경의 실제 host/domain과 숫자 port로 바꿔 입력하세요.
 
 ## Offline Image Flow
 
@@ -86,3 +97,11 @@ Podman Compose에서는 Docker Compose의 `--pull never` 옵션을 쓰지 마세
 - `nginx/certs/`
 - `broker/data/`
 - `broker/logs/`
+
+## DMZ MQTT Proxy
+
+DMZ 서버에서 모바일 클라이언트용 MQTT-over-WebSocket만 외부에 노출해야 하면
+`dmz/` 디렉터리의 가이드를 사용합니다.
+
+- Docker 환경: [dmz/README.docker.md](dmz/README.docker.md)
+- Podman 환경: [dmz/README.podman.md](dmz/README.podman.md)
