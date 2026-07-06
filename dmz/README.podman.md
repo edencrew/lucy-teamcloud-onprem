@@ -36,6 +36,10 @@ DMZ 서버와 internal/onprem 서버는 서로 다른 서버입니다. DMZ 외�
 서버의 compose 파일 `ports`에서 정하고, 모바일 클라이언트가 사용할 broker URL은
 internal/onprem 서버의 `.env`에 있는 `PUBLIC_BROKER_WS_URL`에 설정합니다.
 
+기본 실행은 plain WS입니다. 인증서가 없으면 `compose.podman.yml`을 사용하세요.
+WSS는 `certs/server.crt`, `certs/server.key`가 준비된 경우에만
+`compose.podman.wss.yml`을 명시적으로 선택합니다.
+
 ## 2. Plain WS 실행
 
 Podman 기본 compose는 plain WS이며 rootless 환경을 고려해 기본값으로 `18080:80`만
@@ -136,6 +140,13 @@ cp /path/to/server.crt certs/server.crt
 cp /path/to/server.key certs/server.key
 ```
 
+WSS compose를 실행하기 전에 인증서 파일이 실제로 있는지 확인합니다. 실패하면 WSS를
+실행하지 말고 인증서를 먼저 배치하거나 plain WS compose를 사용하세요.
+
+```bash
+test -f certs/server.crt && test -f certs/server.key
+```
+
 각 서버에서 파일을 확인한 뒤 DMZ 서버에서 실행합니다.
 
 ```bash
@@ -155,7 +166,9 @@ curl -k "https://<DMZ_HOST>:<DMZ_WSS_PORT>/health"
 
 온라인 PC에서 Podman용 DMZ image archive를 만듭니다. export는 Docker CLI를
 사용하지만, Podman compose 파일을 기준으로 archive를 만듭니다. DMZ는 WS/WSS 모두
-같은 nginx 이미지를 사용하므로 WSS용 archive를 따로 만들 필요가 없습니다.
+같은 nginx 이미지를 사용하므로 WSS용 archive를 따로 만들 필요가 없습니다. archive는
+mode별로 따로 만들지 않고, 실행할 때 선택하는 compose 파일만 `compose.podman.yml`
+또는 `compose.podman.wss.yml`로 바꿉니다.
 
 ```bash
 cd dmz

@@ -16,6 +16,11 @@ Mobile app
 - Docker 환경: [README.docker.md](README.docker.md)
 - Podman 환경: [README.podman.md](README.podman.md)
 
+DMZ 기본 실행은 plain WS입니다. 인증서가 없는 환경에서는 기본 compose
+(`compose.docker.yml`, `compose.podman.yml`)를 사용하세요. WSS는
+`certs/server.crt`, `certs/server.key`가 준비된 경우에만 `.wss.yml` compose를
+명시적으로 선택합니다.
+
 DMZ 서버와 internal/onprem 서버는 서로 다른 서버입니다. DMZ gateway port는 `.env`로
 바뀌지 않으므로, 각 runtime 가이드의 실행 섹션에서 DMZ 서버 compose `ports`를 먼저
 운영 port로 맞추세요. 모바일 클라이언트가 사용할 broker URL은 internal/onprem 서버
@@ -48,7 +53,8 @@ vi .env
 ```
 
 `INTERNAL_MQTT_UPSTREAM`은 DMZ 서버에서 접근 가능한 내부 TeamCloud nginx 주소입니다.
-`/mqtt`를 붙이지 마세요. DMZ nginx가 들어온 `/mqtt` 요청 경로를 그대로 보존합니다.
+내부 onprem gateway가 non-standard port를 쓰면 port까지 포함하세요. `/mqtt`를 붙이지
+마세요. DMZ nginx가 들어온 `/mqtt` 요청 경로를 그대로 보존합니다.
 
 기본 compose는 plain WS입니다. WSS 모드는 `compose.*.wss.yml`을 명시적으로 선택하고,
 `certs/server.crt`, `certs/server.key`를 준비해야 합니다.

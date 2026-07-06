@@ -25,6 +25,9 @@ load-compose-images-podman.sh
 DESCRIPTION
   Verify and load a DMZ image archive into Podman.
 
+  DMZ plain WS and WSS both use the same nginx image. Load one archive, then
+  choose compose.podman.yml or compose.podman.wss.yml when starting the service.
+
 USAGE
   ./scripts/load-compose-images-podman.sh [OPTIONS] [ARCHIVE_PATH]
 

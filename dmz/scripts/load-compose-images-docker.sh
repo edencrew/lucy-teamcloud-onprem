@@ -25,6 +25,9 @@ load-compose-images-docker.sh
 DESCRIPTION
   Verify and load a DMZ image archive into Docker.
 
+  DMZ plain WS and WSS both use the same nginx image. Load one archive, then
+  choose compose.docker.yml or compose.docker.wss.yml when starting the service.
+
 USAGE
   ./scripts/load-compose-images-docker.sh [OPTIONS] [ARCHIVE_PATH]
 

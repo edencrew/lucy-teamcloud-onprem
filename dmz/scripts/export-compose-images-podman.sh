@@ -22,6 +22,10 @@ DESCRIPTION
   Export images required by the default dmz/compose.podman.yml plain WS compose
   into a tar.gz archive.
 
+  DMZ plain WS and WSS both use the same nginx image. One archive is enough for
+  both compose.podman.yml and compose.podman.wss.yml; choose the mode at run time
+  by selecting the compose file.
+
 USAGE
   ./scripts/export-compose-images-podman.sh [OPTIONS]
 
