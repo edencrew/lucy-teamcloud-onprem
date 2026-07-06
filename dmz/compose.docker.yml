@@ -1,0 +1,29 @@
+name: lucy-teamcloud-dmz
+
+services:
+  dmz-mqtt-proxy:
+    image: docker.io/library/nginx:1.26-alpine
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      DMZ_SERVER_NAME: ${DMZ_SERVER_NAME}
+      INTERNAL_MQTT_UPSTREAM: ${INTERNAL_MQTT_UPSTREAM}
+    volumes:
+      - ./nginx:/etc/nginx/templates:ro
+      - ./certs:/etc/nginx/certs:ro
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        envsubst '$$DMZ_SERVER_NAME $$INTERNAL_MQTT_UPSTREAM' \
+          < /etc/nginx/templates/nginx.ws.conf.template \
+          > /etc/nginx/nginx.conf
+        nginx -t
+        exec nginx -g 'daemon off;'
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
