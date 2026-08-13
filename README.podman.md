@@ -2,10 +2,31 @@
 
 ## 사전 요구사항
 
+설치 서버:
+
 - Podman
 - `podman compose` 또는 `podman-compose`
 - 최소 4GB RAM, 10GB 디스크 공간
 - SELinux 사용 환경에서는 bind mount relabel 지원 필요
+
+폐쇄망 bundle을 만드는 온라인 PC:
+
+- 실행 중인 Docker daemon
+- Docker Compose v2와 Buildx
+- Docker API 1.48 이상(Docker Engine 28 이상)
+- `docker save --platform` 지원
+
+```bash
+docker info
+docker version
+docker compose version
+docker buildx version
+docker save --help | grep -- --platform
+```
+
+Podman용 bundle도 온라인 PC에서는 Docker CLI로 생성합니다. 자세한 호환성은
+[Docker image save](https://docs.docker.com/reference/cli/docker/image/save/)와
+[Docker API version matrix](https://docs.docker.com/reference/api/engine/)를 확인하세요.
 
 ## 1. 환경 설정
 
@@ -156,6 +177,9 @@ HOST_GID=1000
 - `DB_USERNAME`
 - `DB_PASSWORD`
 
+`DB_PASSWORD`는 PostgreSQL `DATABASE_URL`에 URL encoding 없이 포함됩니다. `.env`의
+따옴표는 URI encoding을 대신하지 않으므로 `[A-Za-z0-9._~-]` 범위의 값을 사용하세요.
+
 ## 2. 라이센스 파일 배치
 
 ```bash
@@ -164,22 +188,45 @@ cp /path/to/your/license.json license/license.json
 
 라이센스 파일이 없으면 `tc-be`가 시작 시 검증에 실패하여 종료됩니다.
 
-## 3. 서비스 실행
+## 3. 서비스 최초 실행
 
-폐쇄망 Podman 서버에서는 먼저 [Offline Image Flow](#5-offline-image-flow)로 이미지를
-로드한 뒤 실행합니다.
+Podman Compose는 일회성 `init-secrets` 완료 대기를 안정적으로 처리하지 못하는 버전이
+있습니다. 최초 설치에서는 `init-secrets`를 직접 한 번 실행한 뒤 전체 서비스를
+올립니다.
 
-Podman Compose는 일회성 `init-secrets` 완료 대기를 안정적으로 처리하지 못하는
-버전이 있으므로, Podman 설치에서는 `init-secrets`를 직접 한 번 실행한 뒤 전체
-서비스를 올립니다.
+### 3.1 public망 최초 설치
+
+온라인 설치 서버에서는 로컬 `init-secrets` 이미지를 먼저 만들고, 나머지 이미지를
+registry에서 받은 뒤 `init-secrets`와 전체 서비스를 순서대로 실행합니다.
 
 ```bash
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
-
+podman build -t localhost/lucy-teamcloud-onprem-init-secrets:offline ./init-secrets &&
+podman compose --env-file .env -f compose.podman.yml pull &&
+podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets &&
 podman compose --env-file .env -f compose.podman.yml up -d --no-build
 ```
 
-상태와 로그 확인:
+### 3.2 폐쇄망 최초 설치
+
+[Offline Image Bundle 생성](#5-offline-image-bundle-생성)에 따라 동일한 export에서 나온
+bundle 파일을 `<설치 루트>/images/`에 배치합니다. load부터 Compose 실행까지
+같은 OS 사용자와 같은 rootless/rootful mode를 사용하세요. 기존 설치 루트로 이동한 뒤
+아래 명령을 실행합니다.
+
+```bash
+./scripts/load-compose-images-podman.sh \
+  ./images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz &&
+podman compose --env-file .env -f compose.podman.init-secrets.yml \
+  run --rm init-secrets &&
+podman compose --env-file .env -f compose.podman.yml up -d --no-build
+```
+
+loader가 gzip, image 목록과 load된 image를 검증하고, `.sha256` 파일이 있으면
+checksum도 확인합니다. loader 또는 `init-secrets`가 실패하면 `&&` 뒤의 명령은
+진행되지 않습니다. `--no-build`는 pull을 금지하는 옵션이 아니므로 필요한 bundle을
+같은 사용자 context에 먼저 load하는 것이 폐쇄망 실행의 전제입니다.
+
+최초 실행 후 상태와 로그를 확인합니다.
 
 ```bash
 podman compose --env-file .env -f compose.podman.yml ps
@@ -195,35 +242,34 @@ podman compose --env-file .env -f compose.podman.yml down
 
 운영 환경에서 `down -v`는 사용하지 마세요.
 
-## 4. 버전 업데이트 및 재실행
+## 4. 이미지 버전 업데이트
 
-이미지 버전은 `compose.podman.yml`의 `image:` tag가 기준입니다. 버전을 올릴 때는
-새 소스 전체를 먼저 반영한 뒤 이미지를 pull 또는 load하세요.
+이 절차는 서비스와 image repository가 그대로이고 기존 Compose의 `image:` tag만
+바뀌는 이미지 중심 릴리스에만 적용합니다. 서비스나 image의 추가·삭제, repository
+변경, 또는 다른 운영 파일 변경이 있으면 즉시 중단하고 해당 릴리스의 migration
+안내를 따르세요.
+
+이미지 중심 업데이트에서는 새 Compose 전체를 덮어쓰지 않습니다. 기존 설치의 `.env`,
+`license/license.json`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
+`broker/data/`, `broker/logs/`, custom gateway port를 그대로 유지하고, 변경된 `image:`
+tag만 기존 `compose.podman.yml`에 반영합니다. 업데이트 전에 stack을 내리지 않습니다.
 
 현재 배포 이미지는 `linux/amd64` 서버 기준입니다. arm64 서버 native 실행은 현재
-지원하지 않습니다. arm64 지원이 필요하면 Edencrew ECR 앱 이미지가 arm64로 publish된
-뒤 별도 안내에 따라 진행합니다.
-
-운영 환경에서 `down -v`는 사용하지 마세요. 업데이트 전에는 `.env`,
-`license/license.json`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
-`broker/data/`, `broker/logs/`를 백업하세요.
+지원하지 않습니다.
 
 ### 4.1 public망 Podman 서버
 
-서버가 registry에 직접 접근할 수 있으면 아래 순서로 업데이트합니다.
+새 릴리스에서 바뀐 `image:` tag만 기존 `compose.podman.yml`에 반영한 뒤 실행합니다.
 
 ```bash
-cd /path/to/lucy-teamcloud-onprem
-git pull
-
-podman build -t localhost/lucy-teamcloud-onprem-init-secrets:offline init-secrets
-podman compose --env-file .env -f compose.podman.yml pull
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
+podman compose --env-file .env -f compose.podman.yml config >/dev/null &&
+podman compose --env-file .env -f compose.podman.yml pull &&
 podman compose --env-file .env -f compose.podman.yml up -d --no-build
 ```
 
-`compose.podman.yml`의 gateway port를 직접 수정해서 운영 중이면, 새 소스 반영 이후
-실행 전에 `gw.ports`와 `.env`의 URL host/port가 계속 일치하는지 확인하세요.
+일반적인 이미지 업데이트에서는 `init-secrets` 이미지를 build하거나 `init-secrets`를
+다시 실행하지 않습니다. 산출물이 없거나 릴리스 안내가 명시한 경우에만 별도로
+처리하세요. `--no-build`는 pull을 금지하지 않으므로 위 `pull`이 성공한 뒤 기동합니다.
 
 ```bash
 podman compose --env-file .env -f compose.podman.yml ps
@@ -232,120 +278,83 @@ podman compose --env-file .env -f compose.podman.yml logs --tail=100 tc-be
 
 ### 4.2 폐쇄망 Podman 서버
 
-폐쇄망 서버는 registry에 직접 접근할 수 없으므로, 온라인 PC에서 새 소스 전체를 받은
-뒤 이미지 archive를 다시 만듭니다. 폐쇄망 서버에는 필요한 파일만 옮기고, 기존 설치
-디렉터리 전체를 덮어쓰지 마세요.
+온라인 PC에서 배포할 정확한 release ref를 checkout한 뒤
+[Offline Image Bundle 생성](#5-offline-image-bundle-생성)에 따라 Podman용 bundle을
+생성합니다. 운영 서버용 `.env`와 license는 export PC에 필요하지 않습니다.
 
-온라인 PC에서 처음 소스를 받는 경우:
-
-```bash
-git clone https://github.com/edencrew/lucy-teamcloud-onprem.git
-cd lucy-teamcloud-onprem
-./scripts/export-compose-images-podman.sh
-```
-
-이미 받은 `lucy-teamcloud-onprem` 디렉터리가 있으면 해당 디렉터리에서 업데이트한 뒤
-export합니다.
-
-```bash
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-podman.sh
-```
-
-폐쇄망 Podman 서버의 기존 설치 디렉터리에는 아래 파일만 교체 또는 추가합니다.
+같은 export에서 생성된 아래 세 파일을 이름을 바꾸지 않고 함께
+`<기존 설치 루트>/images/`에 복사합니다.
 
 ```text
-compose.podman.yml
-compose.podman.init-secrets.yml
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.*
+lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz
+lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz.sha256
+lucy-teamcloud-onprem-podman-images-linux-amd64.images.txt
 ```
 
-기존 `.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
-`broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Podman용 archive만
-로드하세요.
-
-기동 전에 `compose.podman.yml`의 `gw.ports`와 `.env`의 접속 URL port가 같은지
-확인하세요. rootless Podman 기본값을 사용하면 gateway는 `18080:80`, `18443:443`을
-publish합니다. 다른 port를 쓰는 경우 `<...>` placeholder를 실제 숫자 port로 바꿔
-입력하세요.
-
-```yaml
-services:
-  gw:
-    ports:
-      - "<ONPREM_HTTP_PORT>:80"
-      - "<ONPREM_HTTPS_PORT>:443"
-```
-
-실제 입력 예:
-
-```yaml
-ports:
-  - "18080:80"
-  - "18443:443"
-```
-
-```env
-EXTERNAL_URL=http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>
-BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
-PUBLIC_BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
-```
+새 릴리스의 변경된 `image:` tag만 기존 `compose.podman.yml`에 반영합니다. 새 Compose
+전체를 복사하지 마세요. compose tag와 bundle은 반드시 같은 릴리스에서 가져와야
+합니다. 그 다음 설치 루트에서 아래 명령을 실행합니다.
 
 ```bash
-grep -n 'ports:\|EXTERNAL_URL\|BROKER_WS_URL\|PUBLIC_BROKER_WS_URL' .env compose.podman.yml
-```
-
-```bash
-./scripts/load-compose-images-podman.sh ./images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz
-
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
+./scripts/load-compose-images-podman.sh \
+  ./images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz &&
 podman compose --env-file .env -f compose.podman.yml up -d --no-build
 ```
 
-Docker용 archive는 Podman 설치에 사용하지 마세요. Podman용 archive에는
-`localhost/lucy-teamcloud-onprem-init-secrets:offline` 이미지가 포함됩니다.
-
-폐쇄망 업데이트에서도 `compose.podman.yml`의 gateway port와 `.env`의
-`EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`이 같은 host/port를 가리키는지
-확인하세요.
-
-## 5. Offline Image Flow
-
-온라인 환경에서 Podman용 이미지 archive를 만듭니다. export는 Docker CLI를 사용하며,
-`compose.podman.yml`과 `compose.podman.init-secrets.yml`을 함께 읽습니다.
+loader가 gzip, image 목록과 load된 image를 검증하고, `.sha256` 파일이 있으면
+checksum도 확인합니다. loader가 실패하면 `&&` 뒤의 `up`은 실행되지 않습니다. load와
+Compose는 같은 OS 사용자와 같은 rootless/rootful mode에서 실행하세요. 일반적인 이미지
+업데이트에서는 `init-secrets`를 다시 실행하지 않습니다.
 
 ```bash
+podman compose --env-file .env -f compose.podman.yml ps
+podman compose --env-file .env -f compose.podman.yml logs --tail=100 tc-be
+```
+
+Docker용 archive는 Podman 설치에 사용하지 마세요. 전체 stack을 미리 내리거나
+`down -v`를 실행하지 않습니다.
+
+## 5. Offline Image Bundle 생성
+
+온라인 PC의 소스 루트에서 배포할 정확한 release ref를 checkout한 뒤 export합니다.
+export 스크립트는 Docker CLI로 `compose.podman.yml`과
+`compose.podman.init-secrets.yml`을 함께 읽고, `init-secrets` 이미지를 `linux/amd64`로
+build합니다. 운영 서버용 `.env`와 license는 필요하지 않습니다.
+
+```bash
+# 아래 값을 실제 배포 tag 또는 commit으로 바꾸세요.
+RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+git checkout --detach "$RELEASE_REF" &&
 ./scripts/export-compose-images-podman.sh
 ```
 
-생성된 Podman용 파일들을 폐쇄망 Podman 서버의 repo `images/` 디렉터리로 옮깁니다.
+기본 출력 위치는 `<소스 루트>/images/`입니다. archive 기준 이름을 `X`라고 할 때
+다음 세 파일을 함께 전송합니다.
 
 ```text
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz.sha256
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.images.txt
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.archive-images.txt
-images/lucy-teamcloud-onprem-podman-images-linux-amd64.services.txt
+X.tar.gz
+X.tar.gz.sha256
+X.images.txt
 ```
 
-폐쇄망 Podman 서버에서 로드하고 실행합니다.
+`X.tar.gz`와 `X.images.txt`는 load에 필요합니다. `X.tar.gz.sha256`은 손상 확인을 위해
+함께 전송하는 것을 권장하며, 없으면 loader가 경고 후 진행합니다.
+`X.archive-images.txt`와 `X.services.txt`는 진단용 선택 파일입니다. 전송하는 파일은
+같은 export에서 생성된 동일한 `X` stem의 세트여야 하며 이름을 바꾸지 마세요.
 
-```bash
-./scripts/load-compose-images-podman.sh ./images/lucy-teamcloud-onprem-podman-images-linux-amd64.tar.gz
+폐쇄망 서버에서는 전송한 파일을 `<설치 루트>/images/`에 보관합니다. 이 디렉터리는
+전송 archive 보관 위치이며 Compose가 archive를 직접 참조하지 않습니다. loader가
+archive의 실제 이미지를 같은 사용자 context의 Podman local image store에 등록합니다.
 
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
-
-podman compose --env-file .env -f compose.podman.yml up -d --no-build
-```
-
-Docker용 archive는 Podman 설치에 사용하지 마세요. Podman용 archive에는
+최초 설치는 [폐쇄망 최초 설치](#32-폐쇄망-최초-설치), 기존 설치 업데이트는
+[폐쇄망 Podman 서버](#42-폐쇄망-podman-서버)의 load와 실행 절차를 따르세요.
+Docker용 archive는 Podman 설치에 사용하지 마세요. Podman용 bundle에는
 `localhost/lucy-teamcloud-onprem-init-secrets:offline` 이미지가 포함됩니다.
 
 Podman Compose에서는 Docker Compose의 `--pull never` 옵션을 쓰지 마세요. 일부
-`podman-compose` 버전은 `never`를 서비스명으로 해석합니다. offline 실행에서는
-`--build`도 쓰지 않습니다. 필요한 이미지는 archive load 단계에서 이미 준비되어야
-합니다.
+`podman-compose` 버전은 `never`를 서비스명으로 해석합니다. `--no-build`도 pull을
+금지하지 않으므로 폐쇄망에서는 같은 릴리스의 compose tag와 bundle, 성공한 load를
+실행 전제조건으로 둡니다.
 
 ## 6. 인증서와 시크릿
 
@@ -364,11 +373,12 @@ podman compose --env-file .env -f compose.podman.yml restart gw
 ```
 
 `EXTERNAL_URL` host를 바꾼 경우 기존 self-signed 인증서와 맞지 않을 수 있습니다.
-필요하면 인증서 파일을 삭제하고 `init-secrets`를 다시 실행하세요.
+아래 절차는 `init-secrets`가 생성한 self-signed 인증서에만 사용하세요. 운영 인증서는
+삭제하지 말고 새 인증서를 준비해 교체합니다.
 
 ```bash
-rm -f nginx/certs/server.crt nginx/certs/server.key
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
+rm -f nginx/certs/server.crt nginx/certs/server.key &&
+podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets &&
 podman compose --env-file .env -f compose.podman.yml restart gw
 ```
 
@@ -445,14 +455,18 @@ See 'docker save --help'.
 ```
 
 Podman용 archive export도 온라인 PC에서는 Docker CLI를 사용합니다. 이미지 다운로드
-문제가 아니므로 Docker Desktop 또는 Docker Engine을 최신 버전으로 업데이트한 뒤, 새
-소스를 다시 받고 export를 다시 실행하세요.
+문제가 아니므로 Docker Desktop 또는 Docker Engine을 요구 버전으로 업데이트한 뒤,
+배포할 정확한 release ref에서 export를 다시 실행하세요.
 
 ```bash
-docker save --help | grep -- --platform
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-podman.sh
+(
+  set -e
+  docker save --help | grep -- --platform
+  cd lucy-teamcloud-onprem
+  RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+  git checkout --detach "$RELEASE_REF"
+  ./scripts/export-compose-images-podman.sh
+)
 ```
 
 ### 이미지 export 중 `does not provide the specified platform` 오류
@@ -464,19 +478,23 @@ git pull
 does not provide the specified platform (linux/amd64)
 ```
 
-Docker Desktop 또는 Docker Engine을 최신 버전으로 업데이트하고, `buildx`가 동작하는지
-확인한 뒤 새 소스를 다시 받고 export를 다시 실행하세요.
+Docker Desktop 또는 Docker Engine을 요구 버전으로 업데이트하고, `buildx`가 동작하는지
+확인한 뒤 배포할 정확한 release ref에서 export를 다시 실행하세요.
 
 ```bash
-docker buildx version
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-podman.sh
+(
+  set -e
+  docker buildx version
+  cd lucy-teamcloud-onprem
+  RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+  git checkout --detach "$RELEASE_REF"
+  ./scripts/export-compose-images-podman.sh
+)
 ```
 
 ### `init-secrets` 산출물이 없을 때
 
-다음 파일이 없으면 전체 stack을 내린 뒤 `init-secrets`를 먼저 실행하세요.
+다음 파일이 없으면 서비스 기동을 중단하고 `init-secrets`를 먼저 실행하세요.
 
 ```bash
 ls -l secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key
@@ -485,8 +503,7 @@ ls -l secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key
 폐쇄망 환경:
 
 ```bash
-podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets
-
+podman compose --env-file .env -f compose.podman.init-secrets.yml run --rm init-secrets &&
 podman compose --env-file .env -f compose.podman.yml up -d --no-build
 ```
 
@@ -511,25 +528,17 @@ iptables: can't initialize iptables table `nat'
 ```
 
 `init-secrets`는 네트워크 없이 실행되도록 분리되어 있습니다. 전체 stack 실행에서 같은
-오류가 나면 실제 서비스 네트워크를 만들 수 없는 상태이므로 운영자가 host kernel
-module, iptables/nftables, rootless Podman 네트워크 정책을 확인해야 합니다.
+오류가 나면 실제 서비스 네트워크를 만들 수 없는 상태입니다. 다음 읽기 전용 정보만
+수집하세요.
 
 ```bash
-podman info | grep -i network -A20
+podman info --debug
 lsmod | grep -E 'ip_tables|iptable_nat|nf_nat|br_netfilter'
 ```
 
-권한 있는 운영자가 host에서 필요한 module을 준비해야 할 수 있습니다.
-
-```bash
-sudo modprobe ip_tables
-sudo modprobe iptable_nat
-sudo modprobe nf_nat
-sudo modprobe br_netfilter
-```
-
-`modprobe`가 보안 정책으로 막힌 VM이면 애플리케이션 설정으로 해결할 수 없습니다. VM
-이미지, kernel module 정책, Podman/netavark 설치 상태를 먼저 맞추세요.
+host kernel module, iptables/nftables, Podman/netavark와 rootless 네트워크 정책은
+플랫폼 관리자 범위입니다. 이 가이드에서 host 설정을 변경하지 말고 수집한 결과와 함께
+확인을 요청하세요.
 
 ### `db`, `tc-fe` 같은 service name을 찾지 못할 때
 
@@ -542,31 +551,29 @@ podman network ls
 podman network inspect lucy-teamcloud-onprem_internal-network | grep -i dns
 ```
 
-정상 기대값은 `networkBackend: netavark`와 `dns_enabled: true`입니다. `cni` backend,
-`dns_enabled=false`, stale `aardvark-dns` 상태는 host Podman 설정 문제입니다.
-운영자는 `netavark`, `aardvark-dns` 설치와 `/etc/containers/containers.conf`의
-network backend 설정을 확인하고, 기존 네트워크를 삭제 후 재생성해야 합니다.
-
-```bash
-podman compose --env-file .env -f compose.podman.yml down
-podman network rm lucy-teamcloud-onprem_internal-network
-podman network create --disable-dns=false lucy-teamcloud-onprem_internal-network
-```
+정상 기대값은 `networkBackend: netavark`와 `dns_enabled: true`입니다. 값이 다르거나
+`aardvark-dns` 상태가 의심되면 위 출력을 보존하고 플랫폼 관리자에게 netavark,
+aardvark-dns, `/etc/containers/containers.conf`를 확인해 달라고 요청하세요. 승인된
+maintenance 절차 없이 기존 네트워크를 삭제하거나 재생성하지 않습니다.
 
 ### `aardvark-dns runs in a different netns`
 
 이 메시지는 이전 rootless Podman 세션의 runtime state가 남았거나
-`/run/user/<uid>/netns`가 정리된 상태에서 발생할 수 있습니다. 데이터 볼륨을 지우지
-말고 runtime state를 정리한 뒤 네트워크를 재생성하세요.
+`/run/user/<uid>/netns`가 정리된 상태에서 발생할 수 있습니다. 다음 상태를 읽기 전용으로
+수집하세요.
 
 ```bash
-export XDG_RUNTIME_DIR=/run/user/$(id -u)
-podman compose --env-file .env -f compose.podman.yml down || true
-podman rm -f $(podman ps -aq --filter name=lucy-teamcloud-onprem) 2>/dev/null || true
-pkill -u $(id -u) aardvark-dns || true
-podman system renumber
-podman ps -a --sync
+id
+printf 'XDG_RUNTIME_DIR=%s\n' "${XDG_RUNTIME_DIR:-<unset>}"
+podman info --debug
+podman ps -a
+podman network ls
+podman network inspect lucy-teamcloud-onprem_internal-network
 ```
+
+광범위한 컨테이너 삭제나 사용자 프로세스 종료, runtime state 재번호 부여는 관련 없는
+Podman workload에도 영향을 줄 수 있으므로 이 가이드에서 수행하지 않습니다. 수집한
+결과를 플랫폼 관리자에게 전달하고 승인된 복구 절차를 따르세요.
 
 ### SSH 세션 종료 후 컨테이너가 내려갈 때
 
@@ -574,19 +581,13 @@ rootless Podman을 SSH 세션에서 직접 실행하면 보안 정책이나 logi
 `/run/user/<uid>`가 정리되면서 컨테이너가 종료될 수 있습니다.
 
 ```bash
-loginctl show-user $(whoami) -p Linger -p RuntimePath -p State
+loginctl show-user "$(whoami)" -p Linger -p RuntimePath -p State
 ```
 
 장기 운영 계정은 직접 SSH 로그인 계정이어야 하며, `su - <user>`로 들어간 shell에서
-rootless Podman을 장기 운영하지 마세요. 운영 정책상 가능하다면 linger를 활성화하고
-systemd user service로 관리하세요.
-
-```bash
-sudo loginctl enable-linger $(whoami)
-```
-
-보안 정책상 linger가 불가하면 Docker 또는 rootful Podman system service 운영을
-검토하세요.
+rootless Podman을 장기 운영하지 마세요. linger, systemd user service, rootful Podman,
+Docker 중 승인된 운영 방식을 플랫폼 관리자에게 확인하세요. 이 가이드에서 logind
+설정을 변경하지 않습니다.
 
 ### `/etc/resolv.conf`가 없을 때
 
@@ -596,12 +597,15 @@ sudo loginctl enable-linger $(whoami)
 failed to stat resolv.conf path: lstat /etc/resolv.conf: no such file or directory
 ```
 
-운영자는 host에 `/etc/resolv.conf`를 준비해야 합니다.
+다음 읽기 전용 정보로 파일과 symlink 상태를 확인하세요.
 
 ```bash
-sudo sh -c 'printf "nameserver <INTERNAL_DNS_IP>\n" > /etc/resolv.conf'
-sudo chmod 644 /etc/resolv.conf
+ls -l /etc/resolv.conf
+readlink -f /etc/resolv.conf
 ```
+
+파일이 없거나 깨진 symlink이면 OS 관리자가 배포판의 resolver 관리 방식에 맞게
+복구해야 합니다. 이 가이드에서 `/etc/resolv.conf`를 생성하거나 덮어쓰지 않습니다.
 
 ### privileged port 또는 unsafe port 문제
 
@@ -623,9 +627,18 @@ Chrome은 일부 port를 `ERR_UNSAFE_PORT`로 차단합니다. 예를 들어 `10
 
 `compose.podman.yml`은 bind mount에 `:z`를 포함하지만, 이는 SELinux label 처리입니다.
 파일 소유권 문제까지 모두 해결하는 것은 아닙니다. `postgres/data`, `git/data`,
-`broker/data`, `broker/logs`에서 permission denied가 발생하면 컨테이너 로그를 먼저
-확인하고, 필요 시 `podman unshare chown`으로 해당 이미지의 실행 UID/GID에 맞추세요.
-임의의 host `chown -R`은 user namespace와 충돌할 수 있습니다.
+`broker/data`, `broker/logs`에서 permission denied가 발생하면 먼저 정확한 경로와
+서비스 로그를 확인하세요.
+
+```bash
+podman compose --env-file .env -f compose.podman.yml ps -a
+podman compose --env-file .env -f compose.podman.yml logs --tail=100 db git broker
+ls -ldZ postgres/data git/data broker/data broker/logs
+```
+
+이미지별 UID/GID와 user namespace 매핑을 확인하지 않은 `chown`은 상태를 악화시킬 수
+있습니다. 위 결과를 보존하고 플랫폼 관리자에게 소유권과 SELinux 정책 확인을
+요청하세요.
 
 ### `podman-compose ps -q <service>` 미지원
 
@@ -677,15 +690,21 @@ podman compose --env-file .env -f compose.podman.yml logs --tail=100 db
 ls: cannot open directory '/docker-entrypoint-initdb.d/': Permission denied
 ```
 
-운영자는 initdb 파일이 컨테이너에서 읽히도록 권한을 맞춰야 합니다.
+정확한 파일 mode와 SELinux label을 먼저 확인하세요.
 
 ```bash
-chmod 755 postgres postgres/initdb
-chmod 644 postgres/initdb/*
+namei -l postgres/initdb/01-create-user.sh
+ls -ldZ postgres postgres/initdb postgres/initdb/01-create-user.sh
+getenforce
 ```
 
-SELinux Enforcing 환경에서는 label도 확인하세요.
+packaged script의 실행 bit가 사라진 것이 확인된 경우에만 설치 루트 안의 정확한 경로를
+복구합니다.
 
 ```bash
-sudo chcon -Rt container_file_t postgres/initdb postgres/data
+chmod 755 postgres postgres/initdb postgres/initdb/01-create-user.sh
 ```
+
+Compose mount에는 `:ro,z`가 있으므로 임의의 광범위한 `chcon`을 실행하지 마세요. mode를
+복구한 뒤에도 SELinux denial이 계속되면 위 진단 결과와 audit log를 플랫폼 관리자에게
+전달하세요.

@@ -2,9 +2,31 @@
 
 ## 사전 요구사항
 
+설치 서버:
+
 - Docker 20.10 이상
 - Docker Compose v2
 - 최소 4GB RAM, 10GB 디스크 공간
+
+폐쇄망 서버용 image bundle을 만드는 온라인 PC:
+
+- 실행 중인 Docker daemon
+- Docker Compose v2
+- Docker Buildx
+- Docker Engine API 1.48 이상(Docker Engine 28 이상)과 `docker save --platform` 지원
+
+```bash
+docker info
+docker version
+docker compose version
+docker buildx version
+docker save --help | grep -q -- '--platform'
+```
+
+`docker save --platform` 요구사항은
+[Docker image save](https://docs.docker.com/reference/cli/docker/image/save/)와
+[Docker Engine API version matrix](https://docs.docker.com/reference/api/engine/)를
+참고하세요.
 
 ## 1. 환경 설정
 
@@ -53,7 +75,7 @@ TZ=Asia/Seoul
 | `BROKER_WS_URL` | `EXTERNAL_URL`의 스킴과 짝을 맞출 것 (`https` -> `wss://`, `http` -> `ws://`) |
 | `PUBLIC_BROKER_WS_URL` | 외부 클라이언트가 접근하는 broker WebSocket URL |
 | `LUCY_ADMIN_NAME` | `admin`으로 고정, 변경하지 마세요 |
-| 비밀번호 | 특수문자 포함 시 따옴표로 감싸세요. 예: `DB_PASSWORD="P@ss!word"` |
+| `DB_PASSWORD` | `DATABASE_URL`에 URL encoding 없이 삽입되므로 `[A-Za-z0-9._~-]` 문자만 사용 권장. `.env`의 따옴표는 URI encoding을 대신하지 않음 |
 | Linux 서버 | `HOST_UID`, `HOST_GID`를 compose 실행 계정의 `id -u`, `id -g` 값으로 설정 |
 
 ### 1.4 운영 port 결정
@@ -205,31 +227,47 @@ docker compose --env-file .env -f compose.docker.yml restart gw
 `init-secrets`는 파일이 이미 있으면 건드리지 않으므로 정식 인증서는 보존됩니다.
 
 `EXTERNAL_URL` 도메인을 변경한 경우 기존 self-signed 인증서가 새 도메인과 맞지
-않을 수 있습니다. 필요하면 인증서 파일과 기존 `init-secrets` 컨테이너를 삭제한 뒤
-재기동하세요.
+않을 수 있습니다. 아래 절차는 `init-secrets`가 생성한 self-signed 인증서에만
+사용하세요. 운영 인증서는 삭제하지 말고 새 인증서를 준비해 교체합니다.
 
 ```bash
-rm -f nginx/certs/server.crt nginx/certs/server.key
-docker compose --env-file .env -f compose.docker.yml rm -f init-secrets
-docker compose --env-file .env -f compose.docker.yml up -d --build
+rm -f nginx/certs/server.crt nginx/certs/server.key &&
+docker compose --env-file .env -f compose.docker.yml rm -f init-secrets &&
+docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
 ```
 
 ## 4. 서비스 실행
 
-### 4.1 최초 실행
+### 4.1 Public망 최초 실행
 
 ```bash
 docker compose --env-file .env -f compose.docker.yml up -d --build
 ```
 
-### 4.2 로그 확인
+### 4.2 폐쇄망 최초 실행
+
+먼저 [Offline Image Bundle 생성](#7-offline-image-bundle-생성)에 따라 Docker용 bundle을
+`<설치 루트>/images/`에 준비합니다. 세 파일은 같은 export에서 생성된 세트여야 합니다.
+설치 루트에서 load한 뒤 최초 실행합니다.
+
+```bash
+./scripts/load-compose-images-docker.sh \
+  ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz &&
+docker compose --env-file .env -f compose.docker.yml \
+  up -d --pull never --no-build
+```
+
+loader가 gzip, image 목록과 load된 image를 검증하고, `.sha256` 파일이 있으면
+checksum도 확인합니다. loader가 실패하면 `&&` 뒤의 최초 실행은 진행되지 않습니다.
+
+### 4.3 로그 확인
 
 ```bash
 docker compose --env-file .env -f compose.docker.yml logs -f
 docker compose --env-file .env -f compose.docker.yml logs -f tc-be
 ```
 
-### 4.3 서비스 상태 확인
+### 4.4 서비스 상태 확인
 
 ```bash
 docker compose --env-file .env -f compose.docker.yml ps
@@ -247,33 +285,37 @@ docker compose --env-file .env -f compose.docker.yml down
 데이터는 로컬 디렉터리(`postgres/data/`, `git/data/`)에 보존됩니다. 운영
 환경에서 `down -v`는 사용하지 마세요.
 
-## 6. 버전 업데이트 및 재실행
+## 6. 이미지 버전 업데이트
 
-이미지 버전은 `compose.docker.yml`의 `image:` tag가 기준입니다. 버전을 올릴 때는
-새 소스 전체를 먼저 반영한 뒤 이미지를 pull 또는 load하세요.
+아래 절차는 서비스 구성과 image repository는 그대로이고 `compose.docker.yml`의
+`image:` tag만 바뀌는 **이미지 중심 릴리스**에만 사용합니다. 다음 중 하나라도
+해당하면 업데이트를 중단하고 해당 릴리스의 migration 안내를 따르세요.
 
-현재 배포 이미지는 `linux/amd64` 서버 기준입니다. arm64 서버 native 실행은 현재
-지원하지 않습니다. arm64 지원이 필요하면 Edencrew ECR 앱 이미지가 arm64로 publish된
-뒤 별도 안내에 따라 진행합니다.
+- service 또는 image 추가·삭제
+- image repository 변경
+- Compose의 `image:` tag 외 운영 설정 변경
+- `.env`, 인증서, 시크릿 또는 데이터 migration 필요
 
-운영 환경에서 `down -v`는 사용하지 마세요. 업데이트 전에는 `.env`,
-`license/license.json`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
-`broker/data/`, `broker/logs/`를 백업하세요.
+기존 설치에서는 Compose 전체를 새 파일로 덮어쓰지 말고 변경된 `image:` tag만
+반영합니다. `.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`,
+`git/data/`, `broker/data/`, `broker/logs/`와 기존 custom port는 수정하지 않습니다.
 
-### 6.1 public망 Docker 서버
+현재 배포 이미지는 `linux/amd64` 서버 기준입니다. 업데이트 전에 stack을 내릴 필요가
+없으며 `down -v`는 사용하지 마세요.
 
-서버가 registry에 직접 접근할 수 있으면 아래 순서로 업데이트합니다.
+### 6.1 Public망 Docker 서버
+
+새 릴리스에서 변경된 tag만 기존 `compose.docker.yml`에 반영한 뒤 실행합니다.
 
 ```bash
-cd /path/to/lucy-teamcloud-onprem
-git pull
-
-docker compose --env-file .env -f compose.docker.yml pull --ignore-buildable
-docker compose --env-file .env -f compose.docker.yml up -d --build
+docker compose --env-file .env -f compose.docker.yml config --quiet &&
+docker compose --env-file .env -f compose.docker.yml pull --ignore-buildable &&
+docker compose --env-file .env -f compose.docker.yml \
+  up -d --pull never --no-build
 ```
 
-`compose.docker.yml`의 gateway port를 직접 수정해서 운영 중이면, 새 소스 반영 이후
-실행 전에 `gw.ports`와 `.env`의 URL host/port가 계속 일치하는지 확인하세요.
+일반 이미지 업데이트에서는 `init-secrets`를 다시 build하거나 실행하지 않습니다.
+릴리스별 안내가 별도 변경을 요구할 때만 그 안내를 따르세요.
 
 ```bash
 docker compose --env-file .env -f compose.docker.yml ps
@@ -282,112 +324,75 @@ docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
 
 ### 6.2 폐쇄망 Docker 서버
 
-폐쇄망 서버는 registry에 직접 접근할 수 없으므로, 온라인 PC에서 새 소스 전체를 받은
-뒤 이미지 archive를 다시 만듭니다. 폐쇄망 서버에는 필요한 파일만 옮기고, 기존 설치
-디렉터리 전체를 덮어쓰지 마세요.
+온라인 PC에서 배포할 정확한 release ref를 checkout한 뒤
+[Offline Image Bundle 생성](#7-offline-image-bundle-생성)에 따라 Docker bundle을
+생성합니다. 온라인 PC에는 운영 `.env`와 license가 필요하지 않습니다.
 
-온라인 PC에서 처음 소스를 받는 경우:
-
-```bash
-git clone https://github.com/edencrew/lucy-teamcloud-onprem.git
-cd lucy-teamcloud-onprem
-./scripts/export-compose-images-docker.sh
-```
-
-이미 받은 `lucy-teamcloud-onprem` 디렉터리가 있으면 해당 디렉터리에서 업데이트한 뒤
-export합니다.
-
-```bash
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-docker.sh
-```
-
-폐쇄망 Docker 서버의 기존 설치 디렉터리에는 아래 파일만 교체 또는 추가합니다.
-
-```text
-compose.docker.yml
-images/lucy-teamcloud-onprem-docker-images-linux-amd64.*
-```
-
-기존 `.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`, `git/data/`,
-`broker/data/`, `broker/logs/`는 덮어쓰지 말고 그대로 유지하세요. Docker용 archive만
-로드하세요.
-
-기동 전에 `compose.docker.yml`의 `gw.ports`와 `.env`의 접속 URL port가 같은지
-확인하세요. 외부 접속 주소가 `http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>`이면
-`compose.docker.yml`의 `gw` 서비스는 `<ONPREM_HTTP_PORT>:80`을 publish해야 합니다.
-`<...>` 값은 설명용 placeholder이므로 실제 파일에는 운영 host와 숫자 port로 바꿔
-입력하세요.
-
-```yaml
-services:
-  gw:
-    ports:
-      - "<ONPREM_HTTP_PORT>:80"
-```
-
-실제 입력 예:
-
-```yaml
-ports:
-  - "8080:80"
-```
-
-```env
-EXTERNAL_URL=http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>
-BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
-PUBLIC_BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt
-```
-
-```bash
-grep -n 'ports:\|EXTERNAL_URL\|BROKER_WS_URL\|PUBLIC_BROKER_WS_URL' .env compose.docker.yml
-```
-
-```bash
-./scripts/load-compose-images-docker.sh ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz
-
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
-```
-
-폐쇄망 업데이트에서도 `compose.docker.yml`의 gateway port와 `.env`의
-`EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`이 같은 host/port를 가리키는지
-확인하세요.
-
-이미지 버전 변경 없이 `.env` 파일이나 설정 파일만 변경한 경우에는 이미지를 다시
-pull/load하지 않고 재실행만 합니다. public망은 `up -d --build`, 폐쇄망은
-`up -d --pull never --no-build`를 사용하세요.
-
-## 7. Offline Image Flow
-
-온라인 환경에서 이미지 archive를 만듭니다.
-
-```bash
-./scripts/export-compose-images-docker.sh
-```
-
-생성된 Docker용 파일들을 폐쇄망 Docker 서버의 repo `images/` 디렉터리로 옮깁니다.
+같은 export에서 생성된 다음 세 파일을 이름을 바꾸지 않고 폐쇄망 서버의
+`<기존 설치 루트>/images/`에 함께 복사합니다.
 
 ```text
 images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz
 images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz.sha256
 images/lucy-teamcloud-onprem-docker-images-linux-amd64.images.txt
-images/lucy-teamcloud-onprem-docker-images-linux-amd64.archive-images.txt
-images/lucy-teamcloud-onprem-docker-images-linux-amd64.services.txt
 ```
 
-폐쇄망 Docker 서버에서 로드하고 실행합니다.
+새 릴리스의 `compose.docker.yml`을 참고해 기존 Compose에서 변경된 `image:` tag만
+수정합니다. compose tag와 bundle은 반드시 같은 릴리스에서 가져와야 합니다. 설치
+루트에서 아래 명령을 실행하세요.
 
 ```bash
-./scripts/load-compose-images-docker.sh ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+./scripts/load-compose-images-docker.sh \
+  ./images/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz &&
+docker compose --env-file .env -f compose.docker.yml \
+  up -d --pull never --no-build
 ```
 
-Podman용 archive는 Docker 설치에 사용하지 마세요. Docker용 archive에는
-`lucy-teamcloud-onprem-init-secrets:offline` 이미지가 포함됩니다.
+loader가 gzip, image 목록과 load된 image를 검증하고, `.sha256` 파일이 있으면
+checksum도 확인합니다. loader가 실패하면 `&&` 뒤의 `up`은 실행되지 않습니다.
 
-offline 실행에서는 `--build`를 붙이지 마세요. archive 안에 이미 빌드된
-`lucy-teamcloud-onprem-init-secrets:offline` 이미지가 포함됩니다.
+```bash
+docker compose --env-file .env -f compose.docker.yml ps
+docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
+```
+
+## 7. Offline Image Bundle 생성
+
+온라인 PC에서 배포할 정확한 release ref를 checkout하고 실행합니다. export 스크립트는
+`.env.example`로 Compose를 해석하므로 운영 `.env`와 license는 필요하지 않습니다.
+
+```bash
+# 아래 값을 실제 배포 tag 또는 commit으로 바꾸세요.
+RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+git checkout --detach "$RELEASE_REF" &&
+./scripts/export-compose-images-docker.sh
+```
+
+기본 결과는 온라인 소스 루트의 `images/`에 생성됩니다. 파일 이름의 기준 부분을
+`X`라고 할 때 다음 세 파일을 함께 전송합니다.
+
+- `X.tar.gz`
+- `X.tar.gz.sha256`
+- `X.images.txt`
+
+Docker 기본 `X`는 `lucy-teamcloud-onprem-docker-images-linux-amd64`입니다.
+`X.tar.gz`와 `X.images.txt`는 load에 필요합니다. `X.tar.gz.sha256`은 손상 확인을 위해
+함께 전송하는 것을 권장하며, 없으면 loader가 경고 후 진행합니다. 전송하는 파일은
+같은 export에서 생성된 동일 stem의 파일이어야 하며 이름을 바꾸지 마세요.
+
+다음 파일은 진단용이며 load에 필요하지 않습니다.
+
+- `X.archive-images.txt`
+- `X.services.txt`
+
+폐쇄망 서버에서는 전송한 파일을 `<기존 설치 루트>/images/`에 둡니다. 이 디렉터리는
+전송 archive 보관 위치입니다. Compose가 archive를 직접 읽는 것이 아니라 loader가
+archive의 image를 Docker 로컬 image store에 등록하고, Compose가 동일한 이름과 tag의
+로컬 image를 사용합니다.
+
+Podman용 bundle은 Docker 설치에 사용하지 마세요. 실제 load와 실행은
+[폐쇄망 최초 실행](#42-폐쇄망-최초-실행) 또는
+[폐쇄망 Docker 서버 업데이트](#62-폐쇄망-docker-서버)를 따릅니다.
 
 ## 8. 데이터 저장 위치
 
@@ -406,7 +411,8 @@ offline 실행에서는 `--build`를 붙이지 마세요. archive 안에 이미 
 docker compose --env-file .env -f compose.docker.yml down
 tar -czvf backup-$(date +%Y%m%d).tar.gz \
   .env license/license.json secrets nginx/certs postgres/data git/data broker/data broker/logs
-docker compose --env-file .env -f compose.docker.yml up -d --build
+docker compose --env-file .env -f compose.docker.yml \
+  up -d --pull never --no-build
 ```
 
 ## 9. 문제 해결
@@ -442,14 +448,18 @@ unknown flag: --platform
 See 'docker save --help'.
 ```
 
-이미지 다운로드 문제가 아닙니다. Docker Desktop 또는 Docker Engine을 최신 버전으로
-업데이트한 뒤 새 소스를 다시 받고 export를 다시 실행하세요.
+이미지 다운로드 문제가 아닙니다. Docker Desktop 또는 Docker Engine을 요구 버전으로
+업데이트한 뒤 배포할 정확한 release ref에서 export를 다시 실행하세요.
 
 ```bash
-docker save --help | grep -- --platform
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-docker.sh
+(
+  set -e
+  docker save --help | grep -- --platform
+  cd lucy-teamcloud-onprem
+  RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+  git checkout --detach "$RELEASE_REF"
+  ./scripts/export-compose-images-docker.sh
+)
 ```
 
 ### 이미지 export 중 `does not provide the specified platform` 오류
@@ -461,14 +471,18 @@ git pull
 does not provide the specified platform (linux/amd64)
 ```
 
-Docker Desktop 또는 Docker Engine을 최신 버전으로 업데이트하고, `buildx`가 동작하는지
-확인한 뒤 새 소스를 다시 받고 export를 다시 실행하세요.
+Docker Desktop 또는 Docker Engine을 요구 버전으로 업데이트하고, `buildx`가 동작하는지
+확인한 뒤 배포할 정확한 release ref에서 export를 다시 실행하세요.
 
 ```bash
-docker buildx version
-cd lucy-teamcloud-onprem
-git pull
-./scripts/export-compose-images-docker.sh
+(
+  set -e
+  docker buildx version
+  cd lucy-teamcloud-onprem
+  RELEASE_REF='REPLACE_WITH_RELEASE_TAG_OR_COMMIT'
+  git checkout --detach "$RELEASE_REF"
+  ./scripts/export-compose-images-docker.sh
+)
 ```
 
 ### 브라우저 캐시와 OIDC code 만료
