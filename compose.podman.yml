@@ -96,7 +96,7 @@ services:
         max-file: "5"
 
   auth-be:
-    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.9
+    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.0.10
     platform: ${TARGET_PLATFORM:-linux/amd64}
     user: "0:0"
     restart: unless-stopped
@@ -185,7 +185,7 @@ services:
       - internal-network
 
   auth-fe:
-    image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.11
+    image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.0.12
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
