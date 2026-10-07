@@ -194,11 +194,15 @@ services:
       - internal-network
 
   # Studio 설치 파일(DMG/ZIP) 정적 서빙. gw 의 /studio/ 로만 접근하고 외부 포트는 열지 않는다.
-  # 이미지 하나에 Studio 한 버전만 담기며, Studio 갱신은 아래 tag 변경으로 끝난다.
+  # 이미지 하나에 Studio 한 빌드(macOS Sparkle 피드 + Windows MSIX 피드 + 설치 파일)만 담기며,
+  # Studio 갱신은 아래 tag 변경으로 끝난다. tag 는 onprem-prod-<X.Y.Z>.<build>.
   studio-dl:
-    image: public.ecr.aws/edencrew/lucy-studio-dist:onprem-prod-0.0.34
+    image: public.ecr.aws/edencrew/lucy-studio-dist:onprem-prod-0.0.34.345
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
+    environment:
+      # 이미지 안 Sparkle appcast / .appinstaller 의 절대 URL prefix. 고객이 접속하는 주소 그대로.
+      STUDIO_BASE_URL: ${EXTERNAL_URL}/studio
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/healthz"]
       interval: 10s
