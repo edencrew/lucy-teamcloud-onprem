@@ -32,6 +32,8 @@ services:
         condition: service_healthy
       tc-fe:
         condition: service_started
+      studio-dl:
+        condition: service_started
 
   git:
     image: docker.gitea.com/gitea:1.25.3
@@ -188,5 +190,19 @@ services:
     image: public.ecr.aws/edencrew/lucy-auth-fe:onprem-prod-0.1.0
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
+    networks:
+      - internal-network
+
+  # Studio 설치 파일(DMG/ZIP) 정적 서빙. gw 의 /studio/ 로만 접근하고 외부 포트는 열지 않는다.
+  # 이미지 하나에 Studio 한 버전만 담기며, Studio 갱신은 아래 tag 변경으로 끝난다.
+  studio-dl:
+    image: public.ecr.aws/edencrew/lucy-studio-dist:onprem-prod-0.0.34
+    platform: ${TARGET_PLATFORM:-linux/amd64}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     networks:
       - internal-network
