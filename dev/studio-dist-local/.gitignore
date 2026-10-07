@@ -1,0 +1,4 @@
+# build-dist.sh 가 생성하는 산출물
+dist/
+templates/
+.work/

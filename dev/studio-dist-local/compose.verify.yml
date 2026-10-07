@@ -1,0 +1,43 @@
+# gw(nginx.conf 원본) + studio-dl + 더미 upstream 으로 /studio/ 라우팅만 검증하는 스택.
+# 다른 서비스(db, git, tc-be ...)는 gw 의 upstream 이름 해석용 더미다.
+name: studio-dist-verify
+
+networks:
+  internal-network:
+
+services:
+  gw:
+    image: docker.io/library/nginx:1.26-alpine
+    networks: [internal-network]
+    ports:
+      - "28080:80"
+      - "28443:443"
+    volumes:
+      - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - studio-dl
+      - tc-fe
+      - tc-be
+      - auth-fe
+      - auth-be
+      - git
+      - broker
+
+  studio-dl:
+    image: ${STUDIO_DIST_IMAGE:-lucy-studio-dist:local}
+    networks: [internal-network]
+    environment:
+      STUDIO_BASE_URL: ${STUDIO_BASE_URL:-http://localhost:28080/studio}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tc-fe:    { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
+  tc-be:    { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
+  auth-fe:  { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
+  auth-be:  { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
+  git:      { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
+  broker:   { image: docker.io/library/nginx:1.26-alpine, networks: [internal-network] }
