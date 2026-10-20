@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # build-dist.sh 로 만든 이미지를 compose.verify.yml 로 띄우고 Notion 6절 체크리스트의 HTTP 항목을 돌린다.
+#
+#   ./verify.sh            파일 내장형 이미지(build-dist.sh 가 빌드한 것)
+#   ./verify.sh --volume   볼륨 서빙형 이미지(Dockerfile.volume). build-dist.sh 의 dist/·templates/ 를
+#                          tc-be 가 만드는 레이아웃(releases/<id>/html + current 심링크)으로 .work/volume 에 펼쳐 검사한다.
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${STUDIO_DIST_IMAGE:-$(cat "$HERE/.work/image.txt" 2>/dev/null || echo lucy-studio-dist:local)}"
+MODE=baked
+[ "${1:-}" = "--volume" ] && MODE=volume
+if [ "$MODE" = volume ]; then
+  IMAGE="${STUDIO_DIST_IMAGE:-lucy-studio-dist:local-volume}"
+else
+  IMAGE="${STUDIO_DIST_IMAGE:-$(cat "$HERE/.work/image.txt" 2>/dev/null || echo lucy-studio-dist:local)}"
+fi
 BASE_HOST="${BASE_HOST:-http://localhost:28080}"
 export STUDIO_DIST_IMAGE="$IMAGE" STUDIO_BASE_URL="$BASE_HOST/studio"
 
@@ -19,18 +29,55 @@ cd "$HERE"
 echo "image: $IMAGE"
 echo "STUDIO_BASE_URL: $STUDIO_BASE_URL"
 
-echo "== STUDIO_BASE_URL 비우면 기동 실패"
-if docker run --rm -e STUDIO_BASE_URL= "$IMAGE" >/dev/null 2>&1; then bad "빈 STUDIO_BASE_URL 인데 기동됨"; else ok "빈 STUDIO_BASE_URL 이면 exit != 0"; fi
+COMPOSE=(docker compose -f compose.verify.yml)
+STAGE="$HERE/.work/stage"
+S="$BASE_HOST/studio"
+
+if [ "$MODE" = volume ]; then
+  COMPOSE+=(-f compose.verify.volume.yml)
+  [ -f dist/latest.json ] || { echo "dist/ 가 없다. build-dist.sh 를 먼저 돌린다." >&2; exit 1; }
+  echo "== 볼륨 서빙형 이미지 빌드"
+  docker build -q -f Dockerfile.volume -t "$IMAGE" . >/dev/null
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+else
+  echo "== STUDIO_BASE_URL 비우면 기동 실패"
+  if docker run --rm -e STUDIO_BASE_URL= "$IMAGE" >/dev/null 2>&1; then bad "빈 STUDIO_BASE_URL 인데 기동됨"; else ok "빈 STUDIO_BASE_URL 이면 exit != 0"; fi
+fi
 
 echo "== compose up"
-docker compose -f compose.verify.yml up -d --quiet-pull >/dev/null
+"${COMPOSE[@]}" up -d --quiet-pull >/dev/null
 for i in $(seq 1 40); do
-  s="$(docker compose -f compose.verify.yml ps --format '{{.Service}} {{.Health}}' | awk '$1=="studio-dl"{print $2}')"
+  s="$("${COMPOSE[@]}" ps --format '{{.Service}} {{.Health}}' | awk '$1=="studio-dl"{print $2}')"
   [ "$s" = "healthy" ] && break; sleep 1
 done
 check "studio-dl healthy" test "$s" = "healthy"
 
-S="$BASE_HOST/studio"
+if [ "$MODE" = volume ]; then
+  # tc-be 가 하는 일을 흉내 낸다: 호스트에서 템플릿을 렌더링해 스테이징하고, 볼륨의 releases/<id>/html 로 복사한 뒤
+  # current 를 rename(2) 으로 교체한다(mv -T 는 심링크를 디렉터리로 따라가지 않고 그 자리를 바꾼다).
+  install_release() { # install_release <releaseId> <html 원본 디렉터리> [templates 디렉터리]
+    local d="$STAGE/$1"
+    rm -rf "$d"; mkdir -p "$d"; cp -R "$2" "$d/html"
+    if [ -n "${3:-}" ] && [ -d "$3" ]; then
+      (cd "$3" && find . -type f -name '*.tmpl') | while IFS= read -r t; do
+        out="$d/html/${t#./}"; out="${out%.tmpl}"; mkdir -p "$(dirname "$out")"
+        sed "s|__STUDIO_BASE_URL__|$S|g" "$3/$t" > "$out"
+      done
+    fi
+    "${COMPOSE[@]}" exec -T tc-be sh -euc '
+      cd /data/studio-releases; mkdir -p releases; rm -rf "releases/$1"; cp -R "/stage/$1" "releases/$1"
+      ln -s "releases/$1/html" .current.tmp; mv -T .current.tmp current' sh "$1"
+  }
+
+  echo "== 첫 업로드 전 (current 없음)"
+  h="$(hdr "$S/healthz")";     check "/studio/healthz 200 (current 없어도)"   grep -q '^HTTP/.* 200' <<<"$h"
+  h="$(hdr "$S/latest.json")"; check "latest.json 404 (current 없음)"        grep -q '^HTTP/.* 404' <<<"$h"
+
+  mkdir -p "$STAGE/src-next"
+  printf '{"marker":"next"}\n' > "$STAGE/src-next/latest.json"
+  install_release local "$HERE/dist" "$HERE/templates"
+fi
+
 echo "== 피드/메타"
 h="$(hdr "$S/healthz")";                check "/studio/healthz 200 (gw 경유)"                 grep -q '^HTTP/.* 200' <<<"$h"
 h="$(hdr "$S/latest.json")";            check "latest.json 200"                               grep -q '^HTTP/.* 200' <<<"$h"
@@ -84,7 +131,13 @@ sys.exit(1 if bad else 0)
 PY
 [ $? = 0 ] && ok "latest.json 의 모든 파일 size/sha256 일치" || bad "latest.json size/sha256 불일치"
 
+if [ "$MODE" = volume ]; then
+  echo "== current 교체 (재기동 없이 반영)"
+  install_release next "$STAGE/src-next"
+  check "교체 직후 새 릴리스의 latest.json 서빙" bash -c 'curl -s "$0/latest.json" | grep -q "\"marker\":\"next\""' "$S"
+fi
+
 echo
 echo "PASS=$pass FAIL=$fail"
-docker compose -f compose.verify.yml down -v >/dev/null 2>&1 || true
+"${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
 [ "$fail" = 0 ]

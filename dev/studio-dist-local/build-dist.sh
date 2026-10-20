@@ -8,6 +8,9 @@
 #
 # --dummy-large : zip/msix/dmg/exe 를 받지 않고 같은 이름의 더미 파일(8MB 등)을 만든다.
 #                 Range/MIME/헤더 검증에는 충분하고, 서명 검증(실제 Sparkle/App Installer 동작)에는 쓸 수 없다.
+#
+# TC 업로드 테스트용 번들(html/ + templates/)도 .work/lucy-studio-<variant>-<version>.<build>.tar.gz 로 남긴다.
+# 단 TC 는 variant 가 onprem 인 번들만 받는다.
 set -Eeuo pipefail
 
 BUCKET="${BUCKET:-lucy-studio-dist}"
@@ -21,7 +24,7 @@ while [ $# -gt 0 ]; do
     --build) BUILD="$2"; shift 2 ;;
     --dummy-large) DUMMY_LARGE=1; shift ;;
     --tag) IMAGE_TAG="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -165,3 +168,15 @@ log "docker build → $IMAGE"
 docker build -t "$IMAGE" "$HERE"
 log "done: $IMAGE"
 echo "$IMAGE" > "$WORK/image.txt"
+
+# ── TC 업로드 테스트용 번들 ─────────────────────────────────────────────────
+# TC /api/v1/onprem/studio-releases 가 받는 형식: 최상위에 html/(= dist) 와 templates/.
+# macOS bsdtar 는 AppleDouble(._*) 파일과 xattr pax 헤더를 끼워 넣으므로 끈다.
+BUNDLE="$WORK/lucy-studio-$VARIANT-$VERSION.$BUILD_NO.tar.gz"
+log "번들 → $BUNDLE"
+rm -rf "$WORK/bundle"; mkdir -p "$WORK/bundle"
+cp -R "$DIST" "$WORK/bundle/html"; cp -R "$TPL" "$WORK/bundle/templates"
+TAR_OPTS=()
+tar --version 2>/dev/null | grep -q bsdtar && TAR_OPTS=(--no-xattrs --no-mac-metadata)
+COPYFILE_DISABLE=1 tar "${TAR_OPTS[@]+"${TAR_OPTS[@]}"}" -C "$WORK/bundle" -czf "$BUNDLE" html templates
+rm -rf "$WORK/bundle"

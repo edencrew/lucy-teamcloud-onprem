@@ -415,6 +415,10 @@ docker compose --env-file .env -f compose.docker.yml \
   up -d --pull never --no-build
 ```
 
+Studio 릴리스 업로드로 받은 파일은 bind mount 가 아니라 named volume `studio-release` 에 저장됩니다.
+번들을 다시 올리면 복구되므로 백업 대상은 아닙니다. 업로드·되돌리기 절차는
+[README.md 의 Studio 릴리스 업로드](README.md#studio-릴리스-업로드)를 봅니다.
+
 ## 9. 문제 해결
 
 로그와 상태를 먼저 확인합니다.

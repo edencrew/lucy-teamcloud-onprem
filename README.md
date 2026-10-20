@@ -27,6 +27,7 @@ scripts/
   export-compose-images-podman.sh
   load-compose-images-docker.sh
   load-compose-images-podman.sh
+  studio-upload.sh         # Studio 번들을 TC 에 업로드
 images/                    # export 시 생성되는 image bundle 디렉터리, Git에는 포함되지 않음
 ```
 
@@ -163,6 +164,83 @@ image를 사용합니다. load와 재기동은 runtime별 최초 설치 또는 �
 - `nginx/certs/`
 - `broker/data/`
 - `broker/logs/`
+
+## Studio 릴리스 업로드
+
+사내 Studio 의 새 버전은 Edencrew 가 전달한 Studio 번들 파일(`.tar` / `.tar.gz` / `.zip`, 약 1.1GB)을
+TC 에 올려 배포합니다. TC 가 번들을 검증해 `studio-release` 볼륨에 풀고, `/studio/` 가 그 버전을
+서빙하면 사내 Studio 가 다음 실행 때 자동으로 업데이트합니다.
+
+> **현재 상태**: Studio 배포는 TC 업로드 방식으로만 하며, `studio-dl` 이미지 tag 를 올려 Studio 를
+> 갱신하지 않습니다. TC 쪽 저장(`tc-be` 의 `studio-release` 볼륨)과 gw 업로드 경로는 준비돼 있지만,
+> 업로드한 파일을 서빙하는 `studio-dl` 이미지는 아직 나오지 않았습니다. 그 이미지로 바꾸기 전까지는 업로드가
+> 성공해도 `/studio/` 가 지금 이미지에 든 버전을 그대로 내보냅니다. 업로드는 이 기능이 들어간 `tc-be`
+> 이미지에서만 동작하며, 그 전 이미지에서는 경로가 없어 404 가 납니다.
+
+### 올리기
+
+1. **PAT 발급**: 조직 **owner** 계정으로 TC 웹 → 액세스 토큰 화면에서 scope **`api`**, 만료 **당일**로
+   토큰을 만듭니다. `api` scope 토큰은 그 계정의 API 전체를 쓸 수 있으므로 업로드 후 바로 폐기합니다.
+2. **업로드**: 스크립트가 토큰을 숨김 입력으로 묻습니다.
+   ```bash
+   ./scripts/studio-upload.sh /path/to/lucy-studio-onprem-0.0.35.360.tar.gz https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>
+   # 자체 서명 인증서면
+   CACERT=nginx/certs/server.crt ./scripts/studio-upload.sh <번들 파일> https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>
+   ```
+   TC 주소를 생략하면 환경변수 `EXTERNAL_URL` 을 쓰고, 그것도 없으면 입력을 받습니다.
+   업로드 후 서버가 압축 해제와 해시 검증을 하므로 응답까지 몇 분 걸릴 수 있습니다.
+3. **확인**: 응답의 `version`·`build` 가 올린 번들과 같은지, `https://<TC 주소>/studio/latest.json` 이
+   같은 값을 돌려주는지 봅니다.
+4. **PAT 폐기**: 액세스 토큰 화면에서 지웁니다.
+
+직접 `curl` 로 올릴 때는 `Content-Type: application/octet-stream` 을 반드시 붙입니다(없으면 415).
+`--data-binary @파일` 은 파일 전체를 메모리에 올리므로 `-T` 로 보냅니다.
+
+```bash
+curl --fail-with-body -X POST "https://<TC 주소>/api/v1/onprem/studio-releases" \
+  -H "Authorization: Bearer <PAT>" \
+  -H "Content-Type: application/octet-stream" \
+  -T lucy-studio-onprem-0.0.35.360.tar.gz
+```
+
+### 되돌리기
+
+새 버전에 문제가 있으면 **직전 버전 1개**로 되돌릴 수 있습니다.
+
+```bash
+# 보관본 확인: releases[] 에서 active 가 false 인 releaseId
+curl -H "Authorization: Bearer <PAT>" "https://<TC 주소>/api/v1/onprem/studio-releases"
+
+curl -X POST -H "Authorization: Bearer <PAT>" \
+  "https://<TC 주소>/api/v1/onprem/studio-releases/<releaseId>/activate"
+```
+
+이미 새 버전으로 업데이트한 PC 는 돌아오지 않습니다(Studio 자동 업데이트는 다운그레이드하지 않음).
+되돌리기는 아직 업데이트하지 않은 PC 와 신규 설치를 지키는 확산 중단 수단입니다. 방금 내린 버전도 보관되므로
+다시 activate 해 앞으로 돌아갈 수 있습니다.
+
+### 오류
+
+| 응답 | 원인 → 조치 |
+|------|-------------|
+| 403 | owner 가 아님 → owner 계정의 PAT 로 다시 |
+| 409 `STUDIO_RELEASE_BUSY` | 다른 업로드·되돌리기 진행 중 → 끝난 뒤 다시 |
+| 409 `STUDIO_RELEASE_BUILD_DOWNGRADE` | 서빙 중인 것보다 낮은 빌드 → 되돌리기는 activate 로 |
+| 413 | 4GiB 초과. 본문이 nginx HTML 이면 gw 한도(`nginx/nginx.conf` 의 업로드 location) |
+| 415 | `Content-Type: application/octet-stream` 누락 |
+| 400 `STUDIO_BUNDLE_REJECTED`, `..._MANIFEST_FILE_MISMATCH` | 형식 오류 또는 반입 중 손상 → 원본 해시 확인 후 다시 반입 |
+| 400 `STUDIO_RELEASE_INVALID_MANIFEST` | SaaS 용 번들 등 → 온프렘용 번들인지 확인 |
+| 400 `STUDIO_RELEASE_INVALID_BASE_URL` | `.env` 의 `EXTERNAL_URL` 이 http(s) 주소가 아님 |
+| 503 `STUDIO_RELEASE_STORAGE_NOT_CONFIGURED` | compose 에 `studio-release` 볼륨이 없음(구버전 패키지) |
+
+업로드는 됐는데 Studio 가 업데이트를 못 찾으면 `/studio/macos/appcast.xml` 과
+`/studio/windows/LucyStudio.appinstaller` 안의 URL 이 실제 접속 주소로 시작하는지 봅니다. `EXTERNAL_URL` 을
+바꿨다면 `tc-be` 를 재기동하면 피드가 새 주소로 다시 만들어집니다.
+
+### 저장 위치
+
+업로드한 릴리스는 named volume `studio-release` 에 있습니다(활성 + 직전 버전 2개 분량, 업로드 중에는 일시적으로
+번들 크기만큼 더). 번들을 다시 올리면 복구되므로 백업 대상은 아니지만, `down -v` 를 하면 지워집니다.
 
 ## DMZ MQTT Proxy
 

@@ -1,0 +1,18 @@
+# compose.verify.yml 위에 덮어 studio-dl 을 볼륨 서빙형으로 바꾼다 (verify.sh --volume).
+# 패키지와 같은 구성: named volume 을 tc-be 가 rw, studio-dl 이 ro 로 마운트한다.
+# 더미 tc-be 가 verify.sh 의 지시로 .work/stage 의 릴리스를 볼륨에 설치하고 current 를 교체한다.
+# (macOS Docker Desktop 의 bind mount 는 심링크 교체를 늦게 반영해 500 을 내므로 bind 대신 named volume 을 쓴다.)
+volumes:
+  studio-release:
+
+services:
+  studio-dl:
+    image: ${STUDIO_DIST_IMAGE:-lucy-studio-dist:local-volume}
+    environment: !reset {}
+    volumes:
+      - studio-release:/srv/studio:ro
+
+  tc-be:
+    volumes:
+      - studio-release:/data/studio-releases
+      - ./.work/stage:/stage:ro
