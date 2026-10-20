@@ -202,20 +202,17 @@ services:
     networks:
       - internal-network
 
-  # Studio 설치 파일(DMG/ZIP) 정적 서빙. gw 의 /studio/ 로만 접근하고 외부 포트는 열지 않는다.
-  # Studio 배포는 TC 업로드(scripts/studio-upload.sh)로만 하며, Studio 릴리스마다 이 tag 를 올리지 않는다.
-  # 지금 이미지는 Studio 한 빌드를 내장한 이전 방식이라 업로드한 릴리스를 서빙하지 못한다.
-  # TODO: Studio 팀의 볼륨 서빙 이미지(파일을 굽지 않고 <마운트>/current 를 root 로 서빙)가 나오면 image 교체,
-  #   STUDIO_BASE_URL 제거, 아래 마운트 활성화를 한 번에 한다. 지금 이미지에 마운트만 붙이면 서빙 트리가 바뀌지 않는다.
-  #   volumes:
-  #     - studio-release:/srv/studio:ro
+  # Studio 설치·업데이트 파일 정적 서빙. gw 의 /studio/ 로만 접근하고 외부 포트는 열지 않는다.
+  # Studio 배포는 TC 업로드(scripts/studio-upload.sh)로만 한다. tc-be 가 studio-release 볼륨에 릴리스를 풀고
+  # 피드를 렌더링한 뒤 current 심링크를 바꾸면, 이 nginx 가 그 current 를 그대로 서빙한다.
+  # 첫 업로드 전에는 current 가 없어 /studio/* 가 404 다(/healthz 는 200).
   studio-dl:
-    image: public.ecr.aws/edencrew/lucy-studio-dist:onprem-prod-0.0.34.345
+    image: docker.io/library/nginx:1.26-alpine
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
-    environment:
-      # 이미지 안 Sparkle appcast / .appinstaller 의 절대 URL prefix. 고객이 접속하는 주소 그대로.
-      STUDIO_BASE_URL: ${EXTERNAL_URL}/studio
+    volumes:
+      - ./studio-dl/nginx.conf:/etc/nginx/conf.d/default.conf:ro,z
+      - studio-release:/srv/studio:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/healthz"]
       interval: 10s

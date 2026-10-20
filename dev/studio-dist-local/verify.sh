@@ -2,14 +2,15 @@
 # build-dist.sh 로 만든 이미지를 compose.verify.yml 로 띄우고 Notion 6절 체크리스트의 HTTP 항목을 돌린다.
 #
 #   ./verify.sh            파일 내장형 이미지(build-dist.sh 가 빌드한 것)
-#   ./verify.sh --volume   볼륨 서빙형 이미지(Dockerfile.volume). build-dist.sh 의 dist/·templates/ 를
-#                          tc-be 가 만드는 레이아웃(releases/<id>/html + current 심링크)으로 .work/volume 에 펼쳐 검사한다.
+#   ./verify.sh --volume   패키지의 studio-dl 구성(공식 nginx + ../../studio-dl/nginx.conf + 공유 볼륨).
+#                          build-dist.sh 의 dist/·templates/ 를 tc-be 가 만드는 레이아웃(releases/<id>/html + current
+#                          심링크)으로 볼륨에 설치해 검사한다.
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE=baked
 [ "${1:-}" = "--volume" ] && MODE=volume
 if [ "$MODE" = volume ]; then
-  IMAGE="${STUDIO_DIST_IMAGE:-lucy-studio-dist:local-volume}"
+  IMAGE="docker.io/library/nginx:1.26-alpine + ../../studio-dl/nginx.conf"
 else
   IMAGE="${STUDIO_DIST_IMAGE:-$(cat "$HERE/.work/image.txt" 2>/dev/null || echo lucy-studio-dist:local)}"
 fi
@@ -36,8 +37,6 @@ S="$BASE_HOST/studio"
 if [ "$MODE" = volume ]; then
   COMPOSE+=(-f compose.verify.volume.yml)
   [ -f dist/latest.json ] || { echo "dist/ 가 없다. build-dist.sh 를 먼저 돌린다." >&2; exit 1; }
-  echo "== 볼륨 서빙형 이미지 빌드"
-  docker build -q -f Dockerfile.volume -t "$IMAGE" . >/dev/null
   rm -rf "$STAGE"; mkdir -p "$STAGE"
 else
   echo "== STUDIO_BASE_URL 비우면 기동 실패"

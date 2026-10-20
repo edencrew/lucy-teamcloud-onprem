@@ -15,6 +15,7 @@ compose 파일로 서비스를 실행합니다.
 compose.docker.yml   # Docker용 standalone compose
 compose.podman.yml   # Podman용 standalone compose, SELinux :z mount 포함
 compose.podman.init-secrets.yml
+studio-dl/nginx.conf # studio-dl(공식 nginx)이 업로드된 Studio 릴리스를 서빙하는 설정
 dmz/
   compose.docker.yml      # Docker용 plain WS 기본 compose
   compose.docker.wss.yml  # Docker용 WSS compose
@@ -171,11 +172,12 @@ image를 사용합니다. load와 재기동은 runtime별 최초 설치 또는 �
 TC 에 올려 배포합니다. TC 가 번들을 검증해 `studio-release` 볼륨에 풀고, `/studio/` 가 그 버전을
 서빙하면 사내 Studio 가 다음 실행 때 자동으로 업데이트합니다.
 
-> **현재 상태**: Studio 배포는 TC 업로드 방식으로만 하며, `studio-dl` 이미지 tag 를 올려 Studio 를
-> 갱신하지 않습니다. TC 쪽 저장(`tc-be` 의 `studio-release` 볼륨)과 gw 업로드 경로는 준비돼 있지만,
-> 업로드한 파일을 서빙하는 `studio-dl` 이미지는 아직 나오지 않았습니다. 그 이미지로 바꾸기 전까지는 업로드가
-> 성공해도 `/studio/` 가 지금 이미지에 든 버전을 그대로 내보냅니다. 업로드는 이 기능이 들어간 `tc-be`
-> 이미지에서만 동작하며, 그 전 이미지에서는 경로가 없어 404 가 납니다.
+Studio 배포는 이 업로드 방식으로만 하며, Studio 버전마다 패키지 이미지를 바꾸지 않습니다. `studio-dl` 은 공식
+nginx 이미지에 `studio-dl/nginx.conf` 를 붙인 것이라 별도 Studio 이미지를 반입할 필요가 없습니다. 패키지를
+설치하거나 이 방식으로 처음 바꾼 뒤 **첫 업로드 전까지는 `/studio/*` 가 404** 이므로, 기동 후 바로 번들을 올립니다.
+
+> **주의**: 지금 패키지가 고정한 `tc-be` 이미지(`onprem-prod-0.0.21`)에는 업로드 API 가 없어 업로드 경로가
+> 404 를 냅니다. 업로드 API 가 들어간 `tc-be` 이미지가 발행되면 그 tag 로 올린 패키지를 써야 합니다.
 
 ### 올리기
 
