@@ -119,7 +119,7 @@ services:
         max-file: "5"
 
   auth-be:
-    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.1.0
+    image: public.ecr.aws/edencrew/lucy-auth-be:onprem-prod-0.1.1
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     depends_on:
@@ -159,7 +159,7 @@ services:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.22
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.23
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     depends_on:
