@@ -142,7 +142,7 @@ services:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.23
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.24
     platform: ${TARGET_PLATFORM:-linux/amd64}
     user: "0:0"
     restart: unless-stopped
