@@ -1,0 +1,67 @@
+# Devora optional add-on for Podman (separate Compose project "devora"). Same contract as
+# compose.docker.yml; images are fully qualified so Podman does not consult search registries.
+# Rootless runtime behaviour is unverified.
+name: devora
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: [ "${DEVORA_ENV_FILE:?DEVORA_ENV_FILE required}" ]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/db/init:/docker-entrypoint-initdb.d:ro
+    networks: [ devora ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: docker.io/redis/redis-stack-server:7.4.0-v3
+    restart: unless-stopped
+    environment:
+      REDIS_ARGS: "--appendonly yes --save 60 1"
+    volumes:
+      - redisdata:/data
+    networks: [ devora ]
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    image: ${DEVORA_BE_IMAGE:?DEVORA_BE_IMAGE required}
+    restart: unless-stopped
+    env_file: [ "${DEVORA_ENV_FILE:?DEVORA_ENV_FILE required}" ]
+    environment:
+      PYTHONPATH: /app
+      HF_HOME: /data/hfcache
+      AI_DATA_LOG_PATH: /app/.local/ai-data
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    command: [ "granian", "--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "--access-log", "app.main:app" ]
+    ports:
+      - "${API_BIND:?API_BIND required}:${API_PORT:?API_PORT required}:8000"
+    volumes:
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs/spec:/data/doc:ro
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs:/data/be_docs:ro
+      - aidata:/app/.local/ai-data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ devora ]
+
+networks:
+  devora:
+    name: devora_net
+
+volumes:
+  pgdata:
+    name: devora_pgdata
+  redisdata:
+    name: devora_redisdata
+  aidata:
+    name: devora_aidata

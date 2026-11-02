@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Bounded Devora lifecycle helper (see devora/INTERFACE.md for the exact argv contract).
+#   manage.sh <docker|podman> <validate|load|bootstrap|start|stop|status> \
+#     --env-file FILE --media-dir DIR
+# Never prints env values. Never removes volumes (no down -v). Bootstrap only on new empty volumes.
+set -Eeuo pipefail
+umask 077
+
+BE_COMMIT="e196ad2aa8c3a5a1f130e443e6173af180304cee"
+PROJECT="devora"
+VOLUMES="devora_pgdata devora_redisdata devora_aidata"
+INIT_SQL="001_init.sql 002_rag_document_mgmt.sql 003_dashboard_cols.sql"
+REQUIRED_KEYS="DEVORA_BE_IMAGE API_BIND API_PORT APP_ENV AUTH_MODE CORS_MODE ORG_SCOPE_ENABLED
+PLAN_LOCK_ENABLED DEPLOYMENT_ORG_ID THREAD_NAMESPACE_SECRET TEAMCLOUD_BASE_URL OIDC_ISSUER OIDC_AUDIENCE
+OIDC_JWKS_URI OIDC_JWKS_HOST_ALLOWLIST OIDC_EXPECTED_TYP POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
+DATABASE_URL REDIS_URL LITELLM_BASE_URL LITELLM_MASTER_KEY CHAT_MODEL DESIGN_EDIT_MODEL SCRIPT_MODEL
+EMBEDDING_BACKEND EMBEDDING_MODEL OLLAMA_BASE_URL"
+
+die() { printf 'devora: ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf 'devora: %s\n' "$*" >&2; }
+usage() { die "usage: manage.sh <docker|podman> <validate|load|bootstrap|start|stop|status> --env-file FILE --media-dir DIR"; }
+
+[ $# -eq 6 ] || usage
+RUNTIME="$1"; ACTION="$2"; shift 2
+case "$RUNTIME" in docker|podman) ;; *) usage ;; esac
+case "$ACTION" in validate|load|bootstrap|start|stop|status) ;; *) usage ;; esac
+ENV_FILE=""; MEDIA=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --env-file) ENV_FILE="$2"; shift 2 ;;
+    --media-dir) MEDIA="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+case "$ENV_FILE" in /*) ;; *) die "--env-file must be absolute" ;; esac
+case "$MEDIA" in /*) ;; *) die "--media-dir must be absolute" ;; esac
+
+HERE="$(cd -P "$(dirname "$0")" && pwd)"
+COMPOSE_FILE="$HERE/compose.$RUNTIME.yml"
+[ -f "$COMPOSE_FILE" ] || die "compose file missing: $COMPOSE_FILE"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+
+# Read KEY=VALUE without sourcing (no shell evaluation of operator input).
+env_get() { awk -v k="$1" 'index($0, k"=")==1 { v=substr($0, length(k)+2) } END { print v }' "$ENV_FILE"; }
+
+validate_env() {
+  [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || die "env file missing or symlink"
+  [ "$(file_mode "$ENV_FILE")" = "600" ] || die "env file must be mode 0600"
+  grep -q $'\r' "$ENV_FILE" && die "env file must use LF line endings"
+  local k v
+  for k in $REQUIRED_KEYS; do
+    v="$(env_get "$k")"
+    [ -n "$v" ] || die "required key empty or absent: $k"
+    case "$v" in *CHANGE_ME*|*changeme*|*'<'*'>'*) die "placeholder value: $k" ;; esac
+  done
+  [ "$(env_get APP_ENV)" = production ] || die "APP_ENV must be production"
+  [ "$(env_get AUTH_MODE)" = enforce ] || die "AUTH_MODE must be enforce"
+  [ "$(env_get ORG_SCOPE_ENABLED)" = 1 ] || die "ORG_SCOPE_ENABLED must be 1"
+  [ "$(env_get PLAN_LOCK_ENABLED)" = true ] || die "PLAN_LOCK_ENABLED must be true"
+  [ -z "$(env_get EDENCREW_ENV)" ] || die "EDENCREW_ENV must be unset/empty on-prem"
+  case "$(env_get CORS_MODE)" in
+    native) ;;
+    web) v="$(env_get ALLOWED_ORIGINS)"; [ -n "$v" ] || die "CORS_MODE=web requires ALLOWED_ORIGINS"
+         case "$v" in *'*'*) die "ALLOWED_ORIGINS must not contain *" ;; esac ;;
+    *) die "CORS_MODE must be native or web" ;;
+  esac
+  [ "$(env_get CONTEXT_PREPARATION_ENABLED)" = false ] || die "CONTEXT_PREPARATION_ENABLED must be false"
+  [ "$(env_get CONTEXT_PREPARATION_BINDING_BYPASS)" = false ] || die "CONTEXT_PREPARATION_BINDING_BYPASS must be false"
+  [ "$(env_get WEB_SEARCH_ENABLED)" = false ] || die "WEB_SEARCH_ENABLED must be false"
+  [ -z "$(env_get JINA_API_KEY)" ] || die "JINA_API_KEY must be unset"
+  [ "$(env_get LOCAL_RERANKER_ENABLED)" = false ] || die "LOCAL_RERANKER_ENABLED must be false"
+  [ "$(env_get AI_DATA_ENABLED)" = false ] || die "AI_DATA_ENABLED must be false"
+  case "$(env_get API_BIND)" in 127.0.0.1|::1) ;; *) die "API_BIND must be loopback" ;; esac
+  case "$(env_get API_PORT)" in ''|*[!0-9]*) die "API_PORT must be numeric" ;; esac
+  case "$(env_get OIDC_JWKS_URI)" in https://*) ;; *) die "OIDC_JWKS_URI must be https" ;; esac
+  local u p d
+  u="$(env_get POSTGRES_USER)"; p="$(env_get POSTGRES_PASSWORD)"; d="$(env_get POSTGRES_DB)"
+  [ "$(env_get DATABASE_URL)" = "postgresql://$u:$p@postgres:5432/$d" ] \
+    || die "DATABASE_URL must be postgresql://POSTGRES_USER:POSTGRES_PASSWORD@postgres:5432/POSTGRES_DB"
+  case "$(env_get REDIS_URL)" in redis://redis:6379*) ;; *) die "REDIS_URL must point at dedicated redis service" ;; esac
+  printf '%s' "$(env_get DEPLOYMENT_ORG_ID)" | grep -Eqi '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+    || die "DEPLOYMENT_ORG_ID must be a UUID"
+}
+
+INVENTORY="images/devora-images.inventory"
+expected_refs() {
+  printf '%s\n' "$(env_get DEVORA_BE_IMAGE)"
+  if [ "$RUNTIME" = podman ]; then printf '%s\n' docker.io/pgvector/pgvector:pg16 docker.io/redis/redis-stack-server:7.4.0-v3
+  else printf '%s\n' pgvector/pgvector:pg16 redis/redis-stack-server:7.4.0-v3; fi
+}
+
+# Inventory written by prepare-media: exactly the three expected refs, one "REF sha256:<64hex> linux/amd64" each.
+validate_inventory() {
+  local inv="$MEDIA/$INVENTORY" ref id plat extra n=0
+  [ -f "$inv" ] && [ ! -L "$inv" ] || die "missing $INVENTORY"
+  [ "$(awk '{print $1}' "$inv" | LC_ALL=C sort)" = "$(expected_refs | LC_ALL=C sort)" ] \
+    || die "$INVENTORY must list exactly the expected three image refs (no duplicates)"
+  while read -r ref id plat extra; do
+    [ -z "$extra" ] || die "malformed $INVENTORY line for $ref"
+    printf '%s' "$id" | grep -Eqx 'sha256:[0-9a-f]{64}' || die "malformed image id in $INVENTORY for $ref"
+    [ "$plat" = linux/amd64 ] || die "image $ref platform is not linux/amd64 in $INVENTORY"
+    n=$((n + 1))
+  done < "$inv"
+  [ "$n" = 3 ] || die "$INVENTORY must have exactly 3 lines"
+}
+
+# Prints "sha256:<id> os/arch" for a local ref; fails if absent.
+inspect_image() {
+  local out id plat
+  out="$("$RUNTIME" image inspect -f '{{.Id}} {{.Os}}/{{.Architecture}}' "$1" 2>/dev/null)" || return 1
+  read -r id plat <<<"$out" || true
+  [ -n "${id:-}" ] || return 1
+  printf 'sha256:%s %s\n' "${id#sha256:}" "${plat:-}"
+}
+
+validate_media() {
+  [ -d "$MEDIA" ] && [ ! -L "$MEDIA" ] || die "media dir missing or symlink"
+  [ -f "$MEDIA/PROVENANCE.txt" ] || die "media PROVENANCE.txt missing"
+  grep -qx "be_commit=$BE_COMMIT" "$MEDIA/PROVENANCE.txt" || die "media be_commit mismatch"
+  [ -f "$MEDIA/SHA256SUMS" ] || die "media SHA256SUMS missing"
+  local s f
+  for f in $INIT_SQL; do [ -f "$MEDIA/db/init/$f" ] || die "missing db/init/$f"; done
+  [ "$(ls -1 "$MEDIA/db/init" | wc -l | tr -d ' ')" = 3 ] || die "db/init must contain exactly $INIT_SQL"
+  [ -d "$MEDIA/docs/spec" ] || die "missing docs/spec"
+  for f in images/devora-images.tar images/devora-images.txt; do [ -f "$MEDIA/$f" ] || die "missing $f"; done
+  while read -r s f; do
+    case "$f" in ''|/*|*..*) die "unsafe SHA256SUMS entry" ;; esac
+    [ -f "$MEDIA/$f" ] || die "SHA256SUMS names missing file: $f"
+    [ "$(sha256_of "$MEDIA/$f")" = "$s" ] || die "checksum mismatch: $f"
+  done < "$MEDIA/SHA256SUMS"
+  # Same contract as the installer's Go verifier: no symlinks, every file except SHA256SUMS is covered.
+  [ -z "$(find "$MEDIA" -type l | head -n 1)" ] || die "media must not contain symlinks"
+  ( cd "$MEDIA" && find . -type f ! -path ./SHA256SUMS | sed 's|^\./||' ) | while read -r f; do
+    awk -v f="$f" '$2==f{found=1} END{exit !found}' "$MEDIA/SHA256SUMS" || die "SHA256SUMS does not cover $f"
+  done || die "media coverage check failed"
+  validate_inventory
+  local img
+  img="$(env_get DEVORA_BE_IMAGE)"
+  grep -qxF "$img" "$MEDIA/images/devora-images.txt" || die "DEVORA_BE_IMAGE not in images/devora-images.txt"
+  if [ "$RUNTIME" = podman ]; then
+    grep -qxF docker.io/pgvector/pgvector:pg16 "$MEDIA/images/devora-images.txt" || die "pgvector image not listed"
+    grep -qxF docker.io/redis/redis-stack-server:7.4.0-v3 "$MEDIA/images/devora-images.txt" || die "redis image not listed"
+  else
+    grep -qxF pgvector/pgvector:pg16 "$MEDIA/images/devora-images.txt" || die "pgvector image not listed"
+    grep -qxF redis/redis-stack-server:7.4.0-v3 "$MEDIA/images/devora-images.txt" || die "redis image not listed"
+  fi
+}
+
+# Compose provider: the installer exports DEVORA_COMPOSE_BINARY (its standalone Compose CLI; for
+# Podman the caller also exports DOCKER_HOST for the Podman socket). Otherwise `<rt> compose`.
+# Python podman-compose is never required.
+compose() {
+  if [ -n "${DEVORA_COMPOSE_BINARY:-}" ]; then
+    [ -x "$DEVORA_COMPOSE_BINARY" ] || die "DEVORA_COMPOSE_BINARY is not executable"
+    set -- "$DEVORA_COMPOSE_BINARY" -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+  else
+    set -- "$RUNTIME" compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+  fi
+  DEVORA_ENV_FILE="$ENV_FILE" DEVORA_MEDIA_DIR="$MEDIA" \
+  DEVORA_BE_IMAGE="$(env_get DEVORA_BE_IMAGE)" API_BIND="$(env_get API_BIND)" API_PORT="$(env_get API_PORT)" \
+    "$@"
+}
+
+# Every inventory ref must exist locally with the exact recorded ID and platform. An existing ref with
+# another ID fails and is never retagged. With "alias" (podman load only), a missing canonical Hub ref
+# for pgvector/redis may be recreated from its Hub shortname or localhost/ name when that candidate has
+# the exact same ID+platform. The operator BE ref and any non-Hub ref are never normalized.
+images_present() {
+  local ref id plat got cand src
+  while read -r ref id plat; do
+    if got="$(inspect_image "$ref")"; then
+      [ "$got" = "$id $plat" ] || die "image $ref has unexpected id/platform; refusing to retag"
+      continue
+    fi
+    [ "${1:-}" = alias ] && [ "$RUNTIME" = podman ] || die "image not loaded: $ref"
+    case "$ref" in
+      docker.io/pgvector/pgvector:pg16|docker.io/redis/redis-stack-server:7.4.0-v3) ;;
+      *) die "image not loaded: $ref" ;;
+    esac
+    src=""
+    for cand in "${ref#docker.io/}" "localhost/${ref#docker.io/}"; do
+      got="$(inspect_image "$cand")" || continue
+      [ "$got" = "$id $plat" ] && { src="$cand"; break; }
+    done
+    [ -n "$src" ] || die "image not loaded: $ref (no same-id/platform alias)"
+    "$RUNTIME" tag "$src" "$ref" >/dev/null
+    [ "$(inspect_image "$ref")" = "$id $plat" ] || die "alias verification failed: $ref"
+  done < "$MEDIA/$INVENTORY"
+}
+
+# Runs BEFORE load: docker/podman load moves an existing tag onto the loaded image, so an existing
+# inventory ref with another ID/platform must fail here, while it is still unchanged.
+refs_not_conflicting() {
+  local ref id plat got
+  while read -r ref id plat; do
+    got="$(inspect_image "$ref")" || continue
+    [ "$got" = "$id $plat" ] || die "image $ref already exists with another id/platform; refusing to load over it"
+  done < "$MEDIA/$INVENTORY"
+}
+
+volume_exists() { "$RUNTIME" volume inspect "$1" >/dev/null 2>&1; }
+
+api_run() { compose run --rm --no-deps --entrypoint sh api -c "$1"; }
+
+do_bootstrap() {
+  local v
+  for v in $VOLUMES; do volume_exists "$v" && die "volume $v already exists; bootstrap is for a NEW EMPTY DB only (use start)"; done
+  images_present
+  local got
+  got="$(compose run --rm --no-deps --entrypoint cat api app/commit_sha.txt | tr -d '\r\n ')"
+  [ "$got" = "$BE_COMMIT" ] || die "image source commit mismatch (expected $BE_COMMIT)"
+  log "starting postgres/redis (init SQL 001-003 run by postgres entrypoint on empty volume)"
+  compose up -d --wait postgres redis
+  log "applying 004_org_scope_mapping"
+  api_run 'python3 deploy/apply_migration.py db/migration/004_org_scope_mapping.sql --dsn "$DATABASE_URL" --var deployment_org_id="$DEPLOYMENT_ORG_ID"'
+  log "applying 004_org_scope"
+  api_run 'python3 deploy/apply_migration.py db/migration/004_org_scope.sql --dsn "$DATABASE_URL" --var deployment_org_id="$DEPLOYMENT_ORG_ID" --var release_sha="$(cat app/commit_sha.txt)"'
+  log "verifying org schema"
+  api_run 'python3 deploy/verify_org_schema.py --dsn "$DATABASE_URL"'
+  log "applying 005_startup_ddl"
+  api_run 'python3 deploy/apply_migration.py db/migration/005_startup_ddl.sql --dsn "$DATABASE_URL" --var release_sha="$(cat app/commit_sha.txt)"'
+  compose up -d api
+  log "bootstrap complete"
+}
+
+validate_env
+validate_media
+case "$ACTION" in
+  validate) compose config -q; log "validate ok" ;;
+  load)
+    refs_not_conflicting
+    "$RUNTIME" load -i "$MEDIA/images/devora-images.tar" >/dev/null
+    images_present alias; log "images loaded" ;;
+  bootstrap) do_bootstrap ;;
+  start)
+    for v in $VOLUMES; do volume_exists "$v" || die "volume $v missing; run bootstrap first"; done
+    images_present
+    compose up -d ;;
+  stop) compose stop ;;
+  status) compose ps ;;
+esac

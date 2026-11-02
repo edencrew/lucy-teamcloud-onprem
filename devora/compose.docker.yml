@@ -1,0 +1,68 @@
+# Devora optional add-on (separate Compose project "devora"; never shares TC network/volumes/DB).
+# Driven only by devora/manage.sh. Required interpolation (from the copied 0600 env file):
+#   DEVORA_BE_IMAGE, DEVORA_MEDIA_DIR, API_BIND, API_PORT. No default image on purpose.
+name: devora
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: [ "${DEVORA_ENV_FILE:?DEVORA_ENV_FILE required}" ]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/db/init:/docker-entrypoint-initdb.d:ro
+    networks: [ devora ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    # Image entrypoint preserved; persistence via REDIS_ARGS. /data is checkpoint state, not cache.
+    image: redis/redis-stack-server:7.4.0-v3
+    restart: unless-stopped
+    environment:
+      REDIS_ARGS: "--appendonly yes --save 60 1"
+    volumes:
+      - redisdata:/data
+    networks: [ devora ]
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    image: ${DEVORA_BE_IMAGE:?DEVORA_BE_IMAGE required}
+    restart: unless-stopped
+    env_file: [ "${DEVORA_ENV_FILE:?DEVORA_ENV_FILE required}" ]
+    environment:
+      PYTHONPATH: /app
+      HF_HOME: /data/hfcache
+      AI_DATA_LOG_PATH: /app/.local/ai-data
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    command: [ "granian", "--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "--access-log", "app.main:app" ]
+    ports:
+      - "${API_BIND:?API_BIND required}:${API_PORT:?API_PORT required}:8000"
+    volumes:
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs/spec:/data/doc:ro
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs:/data/be_docs:ro
+      - aidata:/app/.local/ai-data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [ devora ]
+
+networks:
+  devora:
+    name: devora_net
+
+volumes:
+  pgdata:
+    name: devora_pgdata
+  redisdata:
+    name: devora_redisdata
+  aidata:
+    name: devora_aidata

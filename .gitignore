@@ -18,3 +18,13 @@ dmz/certs/*
 dmz/images/
 *.bak
 images/
+/release-assets/
+/.env
+/local/
+/releases/
+/state/
+/backups/
+/teamcloud-installer-receipt.json
+/bin/teamcloudctl
+/.teamcloud-quarantine/
+/bin/teamcloud-compose
