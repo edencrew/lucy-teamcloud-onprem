@@ -109,13 +109,36 @@ validate_inventory() {
   [ "$n" = 3 ] || die "$INVENTORY must have exactly 3 lines"
 }
 
-# Prints "sha256:<id> os/arch" for a local ref; fails if absent.
+# Docker 28+ selects linux/amd64 explicitly; classic Docker/Podman inspect/save the single local image.
+PLAT=()
+if [ "$RUNTIME" = docker ] && docker image save --help 2>/dev/null | grep -q -- '--platform'; then PLAT=(--platform linux/amd64); fi
+
+# Prints "sha256:<config digest> os/arch" for a local ref; fails if absent. The ID is the canonical
+# config digest from a local save (same as prepare-media), never runtime .Id (may be index/manifest).
+# Return codes: 0 = printed; 1 = ref PROVED missing (platform-independent inspect says "no such
+# image"); 3 = ref exists (or presence unknown) but its id/platform cannot be read -> callers fail.
+ref_state() { # present|missing|error, never platform-selected
+  local err
+  if err="$("$RUNTIME" image inspect "$1" 2>&1 >/dev/null)"; then echo present; return; fi
+  case "$err" in *"No such image"*|*"image not known"*|*"no such image"*) echo missing ;; *) echo error ;; esac
+}
 inspect_image() {
-  local out id plat
-  out="$("$RUNTIME" image inspect -f '{{.Id}} {{.Os}}/{{.Architecture}}' "$1" 2>/dev/null)" || return 1
-  read -r id plat <<<"$out" || true
-  [ -n "${id:-}" ] || return 1
-  printf 'sha256:%s %s\n' "${id#sha256:}" "${plat:-}"
+  local plat t cfg n hex st
+  st="$(ref_state "$1")"
+  [ "$st" = missing ] && return 1
+  [ "$st" = present ] || { echo "error: cannot determine whether $1 exists" >&2; return 3; }
+  plat="$("$RUNTIME" image inspect ${PLAT[@]+"${PLAT[@]}"} -f '{{.Os}}/{{.Architecture}}' "$1" 2>/dev/null)" \
+    || { echo "error: existing $1 has no readable linux/amd64 platform" >&2; return 3; }
+  t="$(mktemp -d)"
+  "$RUNTIME" image save ${PLAT[@]+"${PLAT[@]}"} -o "$t/i.tar" "$1" >/dev/null 2>&1 && tar -xf "$t/i.tar" -C "$t" manifest.json 2>/dev/null \
+    || { rm -rf "$t"; echo "error: cannot read canonical config id of existing $1" >&2; return 3; }
+  n="$(grep -o '"Config":"[^"]*"' "$t/manifest.json" | wc -l | tr -d ' ')"
+  [ "$n" = 1 ] || { rm -rf "$t"; echo "error: save of existing $1 is ambiguous ($n images)" >&2; return 3; }
+  cfg="$(grep -o '"Config":"[^"]*"' "$t/manifest.json" | sed 's/^"Config":"//; s/"$//')"
+  tar -xf "$t/i.tar" -C "$t" "$cfg" 2>/dev/null || { rm -rf "$t"; echo "error: config missing in save of $1" >&2; return 3; }
+  hex="$(sha256_of "$t/$cfg")"; rm -rf "$t"
+  case "$cfg" in *"$hex"*) ;; *) echo "error: config path does not match digest for $1" >&2; return 3 ;; esac
+  printf 'sha256:%s %s\n' "$hex" "$plat"
 }
 
 validate_media() {
@@ -123,20 +146,24 @@ validate_media() {
   [ -f "$MEDIA/PROVENANCE.txt" ] || die "media PROVENANCE.txt missing"
   grep -qx "be_commit=$BE_COMMIT" "$MEDIA/PROVENANCE.txt" || die "media be_commit mismatch"
   [ -f "$MEDIA/SHA256SUMS" ] || die "media SHA256SUMS missing"
-  local s f
+  local s f line
   for f in $INIT_SQL; do [ -f "$MEDIA/db/init/$f" ] || die "missing db/init/$f"; done
   [ "$(ls -1 "$MEDIA/db/init" | wc -l | tr -d ' ')" = 3 ] || die "db/init must contain exactly $INIT_SQL"
   [ -d "$MEDIA/docs/spec" ] || die "missing docs/spec"
   for f in images/devora-images.tar images/devora-images.txt; do [ -f "$MEDIA/$f" ] || die "missing $f"; done
-  while read -r s f; do
-    case "$f" in ''|/*|*..*) die "unsafe SHA256SUMS entry" ;; esac
-    [ -f "$MEDIA/$f" ] || die "SHA256SUMS names missing file: $f"
+  # Lines are "<64hex>  <path>"; the path is the exact rest of the line (spaces kept byte-exact).
+  while IFS= read -r line; do
+    printf '%s\n' "$line" | grep -Eq '^[0-9a-f]{64}  [^[:cntrl:]]+$' || die "malformed SHA256SUMS line"
+    s="${line%%  *}"; f="${line#*  }"
+    case "$f" in /*|*..*|*\\*|./*) die "unsafe SHA256SUMS entry" ;; esac
+    [ -f "$MEDIA/$f" ] && [ ! -L "$MEDIA/$f" ] || die "SHA256SUMS names missing file: $f"
     [ "$(sha256_of "$MEDIA/$f")" = "$s" ] || die "checksum mismatch: $f"
   done < "$MEDIA/SHA256SUMS"
+  [ -z "$(cut -c67- "$MEDIA/SHA256SUMS" | LC_ALL=C sort | uniq -d | head -n 1)" ] || die "duplicate SHA256SUMS entry"
   # Same contract as the installer's Go verifier: no symlinks, every file except SHA256SUMS is covered.
   [ -z "$(find "$MEDIA" -type l | head -n 1)" ] || die "media must not contain symlinks"
-  ( cd "$MEDIA" && find . -type f ! -path ./SHA256SUMS | sed 's|^\./||' ) | while read -r f; do
-    awk -v f="$f" '$2==f{found=1} END{exit !found}' "$MEDIA/SHA256SUMS" || die "SHA256SUMS does not cover $f"
+  ( cd "$MEDIA" && find . -type f ! -path ./SHA256SUMS | sed 's|^\./||' ) | while IFS= read -r f; do
+    awk -v f="$f" 'substr($0,67)==f{found=1} END{exit !found}' "$MEDIA/SHA256SUMS" || die "SHA256SUMS does not cover $f"
   done || die "media coverage check failed"
   validate_inventory
   local img
@@ -171,9 +198,11 @@ compose() {
 # for pgvector/redis may be recreated from its Hub shortname or localhost/ name when that candidate has
 # the exact same ID+platform. The operator BE ref and any non-Hub ref are never normalized.
 images_present() {
-  local ref id plat got cand src
+  local ref id plat got cand src rc
   while read -r ref id plat; do
-    if got="$(inspect_image "$ref")"; then
+    rc=0; got="$(inspect_image "$ref")" || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 1 ] || die "existing image $ref is unreadable; refusing to continue"
+    if [ "$rc" = 0 ]; then
       [ "$got" = "$id $plat" ] || die "image $ref has unexpected id/platform; refusing to retag"
       continue
     fi
@@ -184,7 +213,9 @@ images_present() {
     esac
     src=""
     for cand in "${ref#docker.io/}" "localhost/${ref#docker.io/}"; do
-      got="$(inspect_image "$cand")" || continue
+      rc=0; got="$(inspect_image "$cand")" || rc=$?
+      [ "$rc" = 1 ] && continue
+      [ "$rc" = 0 ] || die "alias candidate $cand is unreadable; refusing to alias"
       [ "$got" = "$id $plat" ] && { src="$cand"; break; }
     done
     [ -n "$src" ] || die "image not loaded: $ref (no same-id/platform alias)"
@@ -196,9 +227,11 @@ images_present() {
 # Runs BEFORE load: docker/podman load moves an existing tag onto the loaded image, so an existing
 # inventory ref with another ID/platform must fail here, while it is still unchanged.
 refs_not_conflicting() {
-  local ref id plat got
+  local ref id plat got rc
   while read -r ref id plat; do
-    got="$(inspect_image "$ref")" || continue
+    rc=0; got="$(inspect_image "$ref")" || rc=$?
+    [ "$rc" = 1 ] && continue
+    [ "$rc" = 0 ] || die "existing image $ref has an unreadable id/platform; refusing to load over it"
     [ "$got" = "$id $plat" ] || die "image $ref already exists with another id/platform; refusing to load over it"
   done < "$MEDIA/$INVENTORY"
 }

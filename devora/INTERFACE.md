@@ -26,7 +26,11 @@ The product payload never contains media, `devora.env` or any operator value.
 - `DEVORA_ENV_FILE` — absolute path to the operator env file (mode `0600`, template
   `devora/.env.example`). Used only to validate (e.g. `DEVORA_BE_IMAGE` is listed in the media
   inventory); never copied into the kit/product/Git and never printed.
-- `DEVORA_MEDIA_DIR` — absolute path to media produced by `devora/prepare-media.sh`.
+- `DEVORA_MEDIA_DIR` — absolute path to media produced by `devora/prepare-media.sh`
+  (build mode, or `prepare-media.sh <docker|podman> --existing-image --be-repo DIR --be-image REF
+  --out EMPTY_DIR`: all refs local, linux/amd64, pinned OCI revision + `commit_sha.txt`, no
+  build/pull/retag). Inventory IDs and `be_image_id` are canonical saved-config sha256, not runtime
+  `.Id`; save/read failure fails closed. Docker acceptance does not certify Podman/fresh stores/app.
 Both unset → TC-only kit. Exactly one set → error. Both set → Devora selected.
 
 ## Kit layout (Devora selected)

@@ -39,14 +39,19 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/tc-devora-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin" "$WORK/media/db/init" "$WORK/media/docs/spec" "$WORK/media/images"
 LOG="$WORK/calls.log"; : > "$LOG"
-ID="$(printf 'a%.0s' $(seq 64))"; ID2="$(printf 'b%.0s' $(seq 64))"
+# Image IDs are real config digests; $WORK/img_<hex>.tar is the local save of that config.
+mkimg() { local d="$WORK/cfg.$1" h; mkdir -p "$d"; printf 'config-%s' "$1" > "$d/c"; h="$(sha256 "$d/c")"
+  mkdir -p "$d/blobs/sha256"; mv "$d/c" "$d/blobs/sha256/$h"; printf '[{"Config":"blobs/sha256/%s"}]' "$h" > "$d/manifest.json"
+  tar -cf "$WORK/img_$h.tar" -C "$d" manifest.json blobs; printf '%s' "$h"; }
+ID="$(mkimg a)"; ID2="$(mkimg b)"
 cat > "$WORK/bin/docker" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$LOG"
 case "\$*" in
   "volume inspect "*) [ -f "$WORK/vol_exists" ] && exit 0 || exit 1 ;;
   *"--entrypoint cat api app/commit_sha.txt"*) cat "$WORK/commit" ;;
-  "image inspect -f "*) echo "sha256:$ID linux/amd64" ;;
+  "image inspect -f "*) echo linux/amd64 ;;
+  "image save -o "*) cp "$WORK/img_$ID.tar" "\$4" ;;
 esac
 exit 0
 EOF
@@ -137,16 +142,80 @@ grep -q '^-p devora -f .*compose.docker.yml config -q$' "$CLOG" || fail "compose
 grep -q 'compose' "$LOG" && fail "runtime compose must not be used when DEVORA_COMPOSE_BINARY is set"
 pass "compose provider"
 
+# ---------- Docker 29 load preflight (pure mock image store; no real load/save/tag) ----------
+# Fake Docker 29: advertises/accepts --platform, runtime .Id is an index digest != saved config digest.
+# Store entry per ref: "<config hex|FAIL> <runtime id hex>"; FAIL = ref exists but save fails.
+export D29S="$WORK/d29s" D29LOG="$WORK/d29.log" D29W="$WORK" D29INV="$WORK/d29media/images/devora-images.inventory"
+printf 'index-manifest-%s' "$ID" > "$WORK/d29idx"; export D29RID="$(sha256 "$WORK/d29idx")"
+mkdir -p "$WORK/d29bin" "$D29S"; DM="$WORK/d29media"; cp -R "$M" "$DM"
+cat > "$WORK/d29bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$D29LOG"
+k() { printf '%s' "$1" | tr '/:' '__'; }
+r="${*: -1}"; f="$D29S/$(k "$r")"
+case "$*" in
+  "image save --help") echo "      --platform string   Save only the given platform variant" ;;
+  "image inspect --platform linux/amd64 -f {{.Os}}/{{.Architecture}} "*) [ -f "$f" ] || exit 1; echo linux/amd64 ;;
+  "image inspect --platform linux/amd64 -f {{.Id}} "*) [ -f "$f" ] || exit 1; echo "sha256:$(cut -d' ' -f2 "$f")" ;;
+  "image inspect "*) [ $# = 3 ] || { echo "fake docker29: unexpected inspect form" >&2; exit 9; }
+    [ -f "$f" ] || { echo "Error response from daemon: No such image: $r" >&2; exit 1; }
+    printf '[{"Id":"sha256:%s"}]\n' "$(cut -d' ' -f2 "$f")" ;;
+  "image save --platform linux/amd64 -o "*) [ -f "$f" ] || exit 1; h="$(cut -d' ' -f1 "$f")"
+    [ "$h" != FAIL ] && cp "$D29W/img_$h.tar" "$6" || { echo "Error response from daemon: failed to export image" >&2; exit 1; } ;;
+  "image save "*) echo "fake docker29: save without --platform not expected" >&2; exit 9 ;;
+  "load -i "*) while read -r ref id p; do [ -f "$D29S/$(k "$ref")" ] \
+      || printf '%s %s\n' "${id#sha256:}" "$D29RID" > "$D29S/$(k "$ref")"; done < "$D29INV" ;;
+esac
+exit 0
+EOF
+chmod +x "$WORK/d29bin/docker"
+dseed() { rm -f "$D29S"/*; : > "$D29LOG"; while [ $# -gt 0 ]; do
+  printf '%s %s\n' "$2" "$D29RID" > "$D29S/$(printf '%s' "$1" | tr '/:' '__')"; shift 2; done; }
+drun() { DEVORA_COMPOSE_BINARY="$WORK/fake-compose" PATH="$WORK/d29bin:$PATH" \
+  bash "$D/manage.sh" docker load --env-file "$ENV" --media-dir "$DM" >/dev/null 2>"$WORK/err"; }
+dsnap() { for f in "$D29S"/*; do printf '%s=%s\n' "${f##*/}" "$(cat "$f")"; done; }
+DPG=pgvector/pgvector:pg16; DRD=redis/redis-stack-server:7.4.0-v3
+[ "$D29RID" != "$ID" ] && [ "$D29RID" != "$ID2" ] && [ "$ID" != "$ID2" ] || fail "docker29 fixtures must be distinct"
+case "$(tar -xOf "$WORK/img_$ID.tar" manifest.json)" in *"blobs/sha256/$ID"*) ;; *) fail "saved fixture config digest" ;; esac
+DBE=reg.local/devora-be:e196ad2
+
+dseed "$DBE" "$ID" "$DPG" "$ID" "$DRD" "$ID"
+[ "$(PATH="$WORK/d29bin:$PATH" docker image inspect --platform linux/amd64 -f '{{.Id}}' "$DPG")" = "sha256:$D29RID" ] \
+  || fail "fake docker29 runtime .Id must be the index digest"
+: > "$D29LOG"
+drun || { cat "$WORK/err" >&2; fail "docker29 same canonical digest must pass despite runtime .Id"; }
+grep -q '^image save --platform linux/amd64 -o ' "$D29LOG" || fail "docker29 selected-platform save not exercised"
+grep -q '^image inspect --platform linux/amd64 -f ' "$D29LOG" || fail "docker29 selected-platform inspect not exercised"
+grep -q '^load -i ' "$D29LOG" || fail "docker29 load must run when digests match"
+grep -q '^tag ' "$D29LOG" && fail "docker29 must not tag when refs correct"
+dseed "$DBE" "$ID" "$DPG" "$ID2" "$DRD" "$ID"; before="$(dsnap)"
+drun && fail "docker29 different canonical digest must be refused"
+grep -q 'already exists with another id/platform' "$WORK/err" || fail "docker29 conflict error path"
+grep -qE '^(load|tag) ' "$D29LOG" && fail "docker29 conflict must fail before load/tag"
+[ "$(dsnap)" = "$before" ] || fail "docker29 conflicting ref mutated"
+pass "docker29 canonical digest vs runtime index .Id preflight"
+
+dseed "$DBE" "$ID" "$DPG" FAIL "$DRD" "$ID"; before="$(dsnap)"
+drun && fail "docker existing ref with unreadable save must fail closed"
+grep -q 'cannot read canonical config id of existing pgvector/pgvector:pg16' "$WORK/err" || fail "save-failure error path (rc 3)"
+grep -q 'unreadable id/platform; refusing to load over it' "$WORK/err" || fail "unreadable ref must not be treated as missing"
+grep -qE '^(load|tag) ' "$D29LOG" && fail "unreadable ref must fail before load/tag"
+[ "$(dsnap)" = "$before" ] || fail "unreadable ref mutated"
+pass "docker existing ref with failing save fails closed before load"
+
 # ---------- podman inventory / same-ID alias (pure mock image store; no real load/tag) ----------
-export PSTORE="$WORK/ps" PLOG="$WORK/podman.log" PCOMMIT="$WORK/commit" PREPO_SRC="$WORK/besrc"
+export PSTORE="$WORK/ps" PLOG="$WORK/podman.log" PCOMMIT="$WORK/commit" PREPO_SRC="$WORK/besrc" PWORK="$WORK"
 mkdir -p "$WORK/pbin" "$PSTORE"
 cat > "$WORK/pbin/podman" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PLOG"
 k() { printf '%s' "$1" | tr '/:' '__'; }
 case "$1 $2" in
-  "image inspect") [ -f "$PSTORE/$(k "$5")" ] || exit 1
-    case "$4" in '{{.Architecture}}') cut -d/ -f2 "$PSTORE/$(k "$5")" ;; '{{.Id}}') cut -d' ' -f1 "$PSTORE/$(k "$5")" ;; *) cat "$PSTORE/$(k "$5")" ;; esac ;;
+  "image inspect") r="${*: -1}"; [ -f "$PSTORE/$(k "$r")" ] || { echo "Error: $r: image not known" >&2; exit 125; }
+    [ $# = 3 ] && exit 0
+    case "$4" in '{{.Os}}/{{.Architecture}}') cut -d' ' -f2 "$PSTORE/$(k "$5")" ;;
+      *image.revision*) cat "$PCOMMIT" ;; *) cat "$PSTORE/$(k "$5")" ;; esac ;;
+  "image save") [ "$3" = -o ] && [ -f "$PSTORE/$(k "$5")" ] || exit 1; cp "$PWORK/img_$(cut -d' ' -f1 "$PSTORE/$(k "$5")").tar" "$4" ;;
   "tag "*) cp "$PSTORE/$(k "$2")" "$PSTORE/$(k "$3")" ;;
   "save -m") [ "$3" = -o ] || exit 2; echo images > "$4" ;;
   "save -o") echo "podman save without -m keeps only the first image" >&2; exit 3 ;;
@@ -154,12 +223,17 @@ case "$1 $2" in
   "load -i") [ -n "${PLOADINV:-}" ] || exit 0
     while read -r r i p; do printf '%s %s\n' "${i#sha256:}" "$p" > "$PSTORE/$(k "$r")"; done < "$PLOADINV" ;;
   "run --rm") cat "$PCOMMIT" ;;
+  # build creates the -t ref with the content of $PWORK/built (ID PLATFORM)
+  "build "*) a=("$@"); for ((i=0; i<${#a[@]}-1; i++)); do
+      [ "${a[i]}" = -t ] && cp "$PWORK/built" "$PSTORE/$(k "${a[i+1]}")"; done ;;
 esac
 exit 0
 EOF
 cat > "$WORK/pbin/git" <<'EOF'
 #!/usr/bin/env bash
-case "$3" in rev-parse) echo 1528a3b84799db085aad24b6edf7b4c081b483e7 ;; archive) tar -cf - -C "$PREPO_SRC" . ;; *) exit 1 ;; esac
+case "$3" in rev-parse) echo 1528a3b84799db085aad24b6edf7b4c081b483e7 ;; archive) tar -cf - -C "$PREPO_SRC" . ;;
+  ls-tree) cd "$PREPO_SRC" && find docs -type f -print0 | while IFS= read -r -d '' f; do printf '100644 blob 0\t%s\0' "$f"; done ;;
+  show) cat "$PREPO_SRC/${4#*:}" ;; *) exit 1 ;; esac
 EOF
 chmod +x "$WORK/pbin/podman" "$WORK/pbin/git"
 # seed REF ID PLATFORM ... (podman reports .Id without the sha256: prefix)
@@ -217,7 +291,15 @@ pass "inventory fail-closed + full SHA256SUMS coverage"
 mkdir -p "$PREPO_SRC/db/init" "$PREPO_SRC/docs/spec" "$WORK/pout"
 echo 'FROM scratch' > "$PREPO_SRC/Dockerfile"; echo s > "$PREPO_SRC/docs/spec/s.md"
 for f in 001_init.sql 002_rag_document_mgmt.sql 003_dashboard_cols.sql; do echo "-- $f" > "$PREPO_SRC/db/init/$f"; done
-seed "$BE" "$ID" linux/amd64 "$PGC" "$ID2" linux/amd64 "$RDC" "$ID" linux/amd64
+# fresh BE ref (default mode refuses an existing one); deps already present are kept (missing-only pull)
+printf '%s linux/amd64\n' "$ID" > "$WORK/built"
+pseed() { seed "$PGC" "$ID2" linux/amd64 "$RDC" "$ID" linux/amd64; }
+seed "$BE" "$ID" linux/arm64 "$PGC" "$ID2" linux/amd64 "$RDC" "$ID" linux/amd64
+PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --be-repo "$WORK/nrepo" --be-image "$BE" --out "$WORK/pout" \
+  >/dev/null 2>"$WORK/err" && fail "existing (wrong-arch) BE must be refused"
+grep -q '^build ' "$PLOG" && fail "refused existing BE must not be built over"
+grep -q '^pull ' "$PLOG" && fail "refused existing BE must not pull"
+pseed
 PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --be-repo "$WORK/nrepo" --be-image "$BE" --out "$WORK/pout" \
   >/dev/null 2>"$WORK/err" || { cat "$WORK/err" >&2; fail "mock prepare-media"; }
 grep -qx "save -m -o $WORK/pout/images/devora-images.tar $BE $PGC $RDC" "$PLOG" || fail "podman save must use -m (multi-image archive)"
@@ -232,12 +314,45 @@ grep -q '  images/devora-images.inventory$' "$PO/SHA256SUMS" || fail "inventory 
 $PGC sha256:$ID2 linux/amd64
 $RDC sha256:$ID linux/amd64" ] || fail "inventory content"
 prun validate "$PO" || { cat "$WORK/err" >&2; fail "manage validate on prepared media"; }
-mkdir -p "$WORK/pout2"; echo x > "$PREPO_SRC/docs/spec/a b.md"
-PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --be-repo "$WORK/nrepo" --be-image "$BE" --out "$WORK/pout2" \
-  >/dev/null 2>"$WORK/err" && fail "whitespace file name must be rejected by prepare-media"
-[ -e "$WORK/pout2/SHA256SUMS" ] && fail "rejected media must not get SHA256SUMS"
-rm -f "$PREPO_SRC/docs/spec/a b.md"
+mkdir -p "$WORK/pout2" "$PREPO_SRC/docs/archive"; echo x > "$PREPO_SRC/docs/archive/오브제의 수명규칙_v1.0.md"
+pseed; PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --be-repo "$WORK/nrepo" --be-image "$BE" --out "$WORK/pout2" \
+  >/dev/null 2>"$WORK/err" || { cat "$WORK/err" >&2; fail "space file name must be kept by prepare-media"; }
+grep -qxF "$(sha256 "$WORK/pout2/docs/archive/오브제의 수명규칙_v1.0.md")  docs/archive/오브제의 수명규칙_v1.0.md" \
+  "$WORK/pout2/SHA256SUMS" || fail "space file name must be covered byte-exact"
+prun validate "$WORK/pout2" || { cat "$WORK/err" >&2; fail "manage validate with space file name"; }
+cp "$WORK/pout2/SHA256SUMS" "$WORK/sums.bak"; tail -n 1 "$WORK/sums.bak" >> "$WORK/pout2/SHA256SUMS"
+prun validate "$WORK/pout2" && fail "duplicate SHA256SUMS entry must fail"
+grep -v ' docs/archive/' "$WORK/sums.bak" > "$WORK/pout2/SHA256SUMS"
+prun validate "$WORK/pout2" && fail "uncovered space file name must fail"
+rm -f "$PREPO_SRC/docs/archive/오브제의 수명규칙_v1.0.md"
+mkdir -p "$WORK/pout3"; echo x > "$PREPO_SRC/docs/spec/a"$'\t'"b.md"
+pseed; PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --be-repo "$WORK/nrepo" --be-image "$BE" --out "$WORK/pout3" \
+  >/dev/null 2>"$WORK/err" && fail "tab file name must be rejected by prepare-media"
+[ -e "$WORK/pout3/SHA256SUMS" ] && fail "rejected media must not get SHA256SUMS"
+rm -f "$PREPO_SRC/docs/spec/a"$'\t'"b.md"; rmdir "$PREPO_SRC/docs/archive"
 pass "prepare-media sidecars before SHA256SUMS (mock)"
+
+# actual inv_line: valid ID -> unchanged line; config_id failure propagates and emits nothing
+INVF="$(sed -n '/^inv_line() {/,/^}/p' "$D/prepare-media.sh")"
+[ "$(bash -c "$INVF"'
+config_id() { echo sha256:'"$ID"'; }; inv_line test-ref')" = "test-ref sha256:$ID linux/amd64" ] || fail "inv_line positive line"
+o="$(bash -c "$INVF"'
+config_id() { return 7; }; inv_line test-ref')" && fail "inv_line must propagate config_id failure"
+[ -z "$o" ] || fail "inv_line must emit no line on config_id failure"
+pass "inv_line propagates config_id failure"
+
+# --existing-image: all refs local + OCI revision + commit_sha + amd64 -> no build/pull/tag; missing dep fails, no pull
+mkdir -p "$WORK/pout4" "$WORK/pout5"
+seed "$BE" "$ID" linux/amd64 "$PGC" "$ID2" linux/amd64 "$RDC" "$ID" linux/amd64
+PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --existing-image --be-repo "$WORK/nrepo" --be-image "$BE" \
+  --out "$WORK/pout4" >/dev/null 2>"$WORK/err" || { cat "$WORK/err" >&2; fail "existing-image prepare"; }
+grep -Eq '^(build|pull|tag) ' "$PLOG" && fail "existing-image must not build/pull/tag"
+grep -qx "$BE sha256:$ID linux/amd64" "$WORK/pout4/images/devora-images.inventory" || fail "existing-image inventory"
+seed "$BE" "$ID" linux/amd64 "$PGC" "$ID2" linux/amd64
+PATH="$WORK/pbin:$PATH" bash "$D/prepare-media.sh" podman --existing-image --be-repo "$WORK/nrepo" --be-image "$BE" \
+  --out "$WORK/pout5" >/dev/null 2>"$WORK/err" && fail "existing-image with missing dep must fail"
+grep -q '^pull ' "$PLOG" && fail "existing-image missing dep must not pull"
+pass "prepare-media --existing-image (mock)"
 
 # ---------- packaging (pure mock: fake git repo, manifest tool, compose, image tar) ----------
 command -v git >/dev/null 2>&1 || { echo "skip packaging: git missing"; echo "all devora tests passed"; exit 0; }

@@ -10,7 +10,19 @@ TC-only installs are unaffected. See [INTERFACE.md](INTERFACE.md) for the instal
 ```
 bash devora/prepare-media.sh docker --be-repo /path/to/be-clone --be-image REGISTRY/devora-be:e196ad2 --out /empty/dir
 ```
-Does: `git archive` of the exact commit → `docker buildx build --platform linux/amd64
+Reuse an already-built BE image (same for `podman`):
+```
+bash devora/prepare-media.sh docker --existing-image --be-repo DIR --be-image REF --out EMPTY_DIR
+```
+Every ref (BE, pgvector, redis) must already exist locally; selected linux/amd64, OCI label
+`org.opencontainers.image.revision` = pinned BE commit and `app/commit_sha.txt` are checked; no
+build/pull/retag. Default mode refuses an existing BE ref and pulls only proven-missing dependencies.
+Inventory/`be_image_id` are the canonical sha256 of the saved image config, not Docker's
+index/platform-manifest `.Id`; an unreadable save fails closed (never treated as missing).
+Docker `--platform` is used only when the CLI supports it. Docker same-daemon acceptance does not
+certify real Podman, classic/fresh stores or app/install.
+
+Default build mode does: `git archive` of the exact commit → `docker buildx build --platform linux/amd64
 --build-arg SOURCE_COMMIT=<commit> -f source/Dockerfile --load -t "$BE_IMAGE" source` → verify arch and
 `app/commit_sha.txt` → save BE image (Podman: `podman save -m`, multi-image archive) + pgvector + redis → copy `db/init` 001-003 and `docs` → write
 `PROVENANCE.txt` and `SHA256SUMS`. The build is not bit-reproducible (uv.lock unused, floating
