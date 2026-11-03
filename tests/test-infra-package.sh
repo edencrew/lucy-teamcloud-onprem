@@ -202,7 +202,8 @@ pass no-overwrite
 
 # ---------- success path (real helper + real compose) ----------
 OUTD="$WORK/out-ok"; mkdir -p "$OUTD"
-run_pkg "$WORK/log-ok" --commit "$COMMIT" --ref v1.2.3 --image-tar "$IMG/teamcloud-images.tar" \
+# No --ref: source_ref must fall back to the v<--version> release label (not a tag check).
+run_pkg "$WORK/log-ok" --commit "$COMMIT" --version 1.2.3 --image-tar "$IMG/teamcloud-images.tar" \
   --manifest-tool "$TC_MANIFEST_TOOL" --output-dir "$OUTD" || fail "success path failed: $WORK/log-ok"
 PKGF="$OUTD/teamcloud-update-v1.2.3-linux-amd64-docker.tar.gz"
 [ -f "$PKGF" ] && [ -f "$PKGF.sha256" ] || fail "package or sidecar missing"
@@ -217,6 +218,10 @@ tar -xOzf "$PKGF" > "$WORK/package-contents" || fail "cannot read package conten
 if grep -aq 'DO-NOT-SHIP' "$WORK/package-contents"; then fail "protected content in package"; fi
 "$TC_MANIFEST_TOOL" ops verify --package "$PKGF" > "$WORK/log-verify" 2>&1 \
   || fail "ops verify --package rejected the package: $WORK/log-verify"
+tar -xOzf "$PKGF" manifest.json > "$WORK/manifest.noref.json"
+grep -Eq '"source_?[Rr]ef" *: *"v1\.2\.3"' "$WORK/manifest.noref.json" || fail "manifest source_ref is not v1.2.3"
+grep -Eq "\"source_?[Cc]ommit\" *: *\"$COMMIT\"" "$WORK/manifest.noref.json" || fail "manifest source_commit is not $COMMIT"
+grep -q '릴리스 라벨' "$WORK/log-ok" || fail "no-ref release-label warning missing"
 pass success-and-verify
 
 # Rerun into the same directory must refuse and leave the package untouched.

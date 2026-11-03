@@ -36,6 +36,7 @@ OPTIONS
   --source-repo PATH    lucy-teamcloud-onprem Git 저장소 (작업 트리 상태는 사용하지 않음)
   --commit SHA40        정확한 소스 커밋 (40자리 소문자 hex)
   --ref REF             선택. vX.Y.Z 이며 --commit 과 같은 커밋이어야 함
+                        생략 시 manifest source_ref 는 v<--version> 릴리스 라벨 (Git 태그 검증 아님)
   --version VER         제품(payload) 버전. 기본값 없음: 생략하면 --ref 에서 유도, 둘 다 주면 일치해야 함
   --image-tar PATH      docker/podman save 로 만든 비압축 tar (이름: [A-Za-z0-9._-]+.tar)
   --manifest-tool PATH  빌드 호스트에서 실행 가능한 teamcloud-installer (ops manifest 사용)
@@ -216,6 +217,7 @@ if [ -n "$REF" ]; then
   [ "$got" = "$COMMIT" ] || die "--ref $REF 는 $COMMIT 가 아닙니다 (${got:-없음})"
 fi
 log "소스 커밋: $COMMIT${REF:+ ($REF)}"
+[ -n "$REF" ] || log "경고: --ref 없음. source_ref=v$VERSION 은 --version 에서 만든 릴리스 라벨이며 Git 태그로 검증되지 않음 (출처는 source_commit)"
 
 # ---------- staging ----------
 STAGE="$(mktemp -d "$OUTPUT_DIR/.teamcloud-update-staging.XXXXXX")" || die "작업 디렉터리를 만들 수 없습니다"
@@ -284,7 +286,7 @@ fi
 # digest/OS/arch and refuses symlinks/protected paths.
 log "manifest 생성 (ops manifest)"
 "$TOOL" ops manifest --runtime "$RUNTIME" --platform "$PLATFORM" --payload "$PKG/payload" \
-  --image-tar "$PKG/images/$IMAGE_NAME" --payload-version "$VERSION" --source-ref "$REF" \
+  --image-tar "$PKG/images/$IMAGE_NAME" --payload-version "$VERSION" --source-ref "${REF:-v$VERSION}" \
   --source-commit "$COMMIT" --requires "$REQUIRES" --out "$PKG/manifest.json" || die "manifest 생성 실패"
 grep -q '"kit-format-2"' "$PKG/manifest.json" && grep -q '"split-init-secrets"' "$PKG/manifest.json" \
   && grep -q '"receipt-identity"' "$PKG/manifest.json" || die "manifest 에 필수 capability 가 없습니다: $REQUIRES"

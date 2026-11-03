@@ -33,6 +33,12 @@ Copy `.env.example`, replace every `CHANGE_ME`. External LLM (LiteLLM) and embed
 already exist (1024-dim embeddings checked at startup). OIDC JWKS must be HTTPS/RS256 with real CA
 trust. `WEB_SEARCH_ENABLED=false` is not an egress blocker; keep requests at `use_web=none` and apply a real network policy.
 
+Optional private CA trust: prepare a regular public PEM bundle on the host (approved private roots plus
+public roots — it replaces the default pool) and set `DEVORA_CA_BUNDLE_FILE=/opt/example/ca/combined-ca.pem`.
+`manage.sh` mounts it read-only (`z`, shared SELinux label) into `api` as `SSL_CERT_FILE`; no root, no
+extra tools (no Python/jq/openssl). It only checks path safety and PEM-certificate shape (no keys); it
+does not validate certificates. Leave empty for unchanged behaviour. See INTERFACE.md.
+
 Secret env is stored at0600. Runtime SQL/docs files use0644 and media directories0755, including readable parent directories; do not guess container UIDs, chown or use0777. The installer copies only these non-secret media with readable modes.
 
 ## Lifecycle

@@ -38,6 +38,7 @@ OPTIONS
   --source-repo PATH       lucy-teamcloud-onprem Git 저장소 (작업 트리 상태는 사용하지 않음)
   --commit SHA40           키트에 넣을 정확한 커밋 (40자리 hex). git archive 로 추출
   --ref REF                선택. 지정하면 REF 가 --commit 과 같은 커밋인지 확인 (예: v0.0.22)
+                           생략 시 KIT-INFO source_ref 는 v<--kit-version> 릴리스 라벨 (Git 태그 검증 아님)
   --installer-archive PATH 기존 설치기 릴리스 아카이브(.tar.gz, 평면 일반 파일 9개 + SHA256SUMS)
   --image-bundle PATH      해당 런타임용 새 이미지 번들. 옆에 .tar.gz.sha256 과 .images.txt 필요
   --manifest-tool PATH     빌드 호스트에서 실행 가능한 teamcloud-installer (ops manifest/verify/version).
@@ -55,7 +56,8 @@ OUTPUT
   DIR/teamcloud-offline-v<VER>-linux-amd64-<runtime>.tar.gz.sha256
 
   압축 안의 최상위 폴더는 하나(teamcloud-offline-v<VER>-linux-amd64-<runtime>/)이며
-  일반 파일과 디렉터리만 들어 있다. 발급 라이선스/.env/비밀값/인증서/데이터는 넣지 않는다.
+  일반 파일과 디렉터리만 들어 있다. podman 키트는 같은 커밋의 README.podman.md 를 source/ 에 넣는다
+  (키트 전용 문서, 제품 payload 아님). 발급 라이선스/.env/비밀값/인증서/데이터는 넣지 않는다.
 
   kit_format=2: product/teamcloud-initial.tar.gz 는 같은 커밋/이미지로 sibling package-update.sh 가
   만든 업데이트 형식 제품 패키지다 (manifest.json 첫 항목, requires kit-format-2,split-init-secrets,
@@ -137,6 +139,40 @@ is_hex64() {
     *[!0-9a-f]*|'') return 1 ;;
   esac
   [ "${#1}" -eq 64 ]
+}
+
+# Verify DIR/SHA256SUMS ("<64hex>  <path>" or "<64hex> *<path>"); the path is kept byte-exact
+# (spaces, non-ASCII allowed). Unsafe, duplicate or uncovered entries fail closed.
+# Writes verified names, one per line, to OUT.
+devora_check_sums() {
+  local dir="$1" out="$2" line h sep n lineno=0
+  : > "$out"
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    [ -n "$line" ] || continue
+    h="${line:0:64}"
+    sep="${line:64:2}"
+    n="${line:66}"
+    is_hex64 "$h" || die "Devora SHA256SUMS 형식 오류 (줄 $lineno): 해시가 64자리 소문자 hex 가 아닙니다"
+    case "$sep" in '  '|' *') ;; *) die "Devora SHA256SUMS 형식 오류 (줄 $lineno): 해시 뒤 구분자가 '  ' 또는 ' *' 가 아닙니다" ;; esac
+    [ -n "$n" ] || die "Devora SHA256SUMS 형식 오류 (줄 $lineno): 파일명이 비어 있습니다"
+    if printf '%s' "$n" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+      die "Devora SHA256SUMS 에 제어 문자가 있는 경로가 있습니다 (줄 $lineno)"
+    fi
+    case "$n" in
+      /*|*\\*|*/|*//*|SHA256SUMS) die "Devora SHA256SUMS 에 안전하지 않은 경로가 있습니다: $n" ;;
+    esac
+    case "/$n/" in */../*|*/./*) die "Devora SHA256SUMS 에 안전하지 않은 경로가 있습니다: $n" ;; esac
+    ! grep -qxF -- "$n" "$out" || die "Devora SHA256SUMS 에 중복 경로가 있습니다: $n"
+    regular_file "$dir/$n" || die "Devora SHA256SUMS 의 파일이 없습니다: $n"
+    [ "$(sha256_of "$dir/$n")" = "$h" ] || die "Devora 미디어 해시 불일치: $n"
+    printf '%s\n' "$n" >> "$out"
+  done < "$dir/SHA256SUMS"
+  # every regular file except SHA256SUMS itself must be covered exactly
+  (cd "$dir" && find . -type f ! -path ./SHA256SUMS | sed 's#^\./##' | LC_ALL=C sort) > "$out.found"
+  LC_ALL=C sort "$out" > "$out.listed"
+  cmp -s "$out.found" "$out.listed" || die "Devora SHA256SUMS 가 미디어 파일 목록과 정확히 대응하지 않습니다 (누락/추가 파일)"
+  rm -f "$out.found" "$out.listed"
 }
 
 # ELF64 little-endian x86-64 check (no `file` dependency)
@@ -251,11 +287,14 @@ if [ "$RUNTIME" = "podman" ]; then
   OTHER_INIT="$INIT_IMAGE"
   COMPOSE_FILES="compose.podman.yml compose.podman.init-secrets.yml"
   RUNTIME_FILES="compose.podman.yml compose.podman.init-secrets.yml scripts/load-compose-images-podman.sh"
+  # Kit-only operator doc from the exact commit (source/README.podman.md); never a product payload file.
+  RUNTIME_DOCS="README.podman.md"
 else
   EXPECT_INIT="$INIT_IMAGE"
   OTHER_INIT="localhost/$INIT_IMAGE"
   COMPOSE_FILES="compose.docker.yml compose.docker.init-secrets.yml"
   RUNTIME_FILES="compose.docker.yml compose.docker.init-secrets.yml scripts/load-compose-images-docker.sh"
+  RUNTIME_DOCS=""
 fi
 INIT_FILE="compose.$RUNTIME.init-secrets.yml"
 # Mirrors the installer allowlist (runtime + common + Studio profile files).
@@ -276,6 +315,7 @@ if [ -n "$REF" ]; then
   [ "$got" = "$COMMIT" ] || die "--ref $REF 는 $COMMIT 가 아닙니다 (${got:-없음})"
 fi
 log "소스 커밋: $COMMIT${REF:+ ($REF)}"
+[ -n "$REF" ] || log "경고: --ref 없음. source_ref=v$KIT_VERSION 은 --kit-version 에서 만든 릴리스 라벨이며 Git 태그로 검증되지 않음 (출처는 source_commit)"
 # kit_format 2 needs the split bootstrap file in the exact commit; legacy sources fail closed here.
 git -C "$REPO" cat-file -e "$COMMIT:$INIT_FILE" 2>/dev/null \
   || die "커밋 $COMMIT 에 $INIT_FILE 이 없습니다: kit_format 2(split-init-secrets) 키트를 만들 수 없습니다"
@@ -417,7 +457,7 @@ log "설치기 아카이브 검증 완료: 바이너리=$INSTALLER_BIN compose=$
 
 # ---------- clean source tree from the exact commit ----------
 # shellcheck disable=SC2086
-git -C "$REPO" archive --format=tar -o "$WORK/source.tar" "$COMMIT" -- $SOURCE_FILES \
+git -C "$REPO" archive --format=tar -o "$WORK/source.tar" "$COMMIT" -- $SOURCE_FILES $RUNTIME_DOCS \
   || die "git archive 실패 (커밋에 필요한 파일이 없을 수 있음)"
 tar -tf "$WORK/source.tar" > "$WORK/src.names"
 tar -tvf "$WORK/source.tar" > "$WORK/src.long"
@@ -425,7 +465,7 @@ check_tar_names "$WORK/src.names" "소스 아카이브"
 check_tar_types "$WORK/src.long" "소스 아카이브"
 mkdir "$ROOT/source"
 tar -xf "$WORK/source.tar" -C "$ROOT/source"
-for rel in $SOURCE_FILES; do
+for rel in $SOURCE_FILES $RUNTIME_DOCS; do
   regular_file "$ROOT/source/$rel" || die "커밋에 필수 소스 파일이 없습니다: $rel"
 done
 [ -z "$(find "$ROOT/source" -mindepth 1 ! -type f ! -type d)" ] || die "소스 트리에 일반 파일/디렉터리가 아닌 항목이 있습니다"
@@ -538,16 +578,7 @@ if [ "$DEVORA" -eq 1 ]; then
   for f in $DEVORA_INIT_SQL; do regular_file "$DM/db/init/$f" || die "Devora 미디어에 db/init/$f 가 없습니다"; done
   [ "$(find "$DM/db/init" -mindepth 1 | wc -l | tr -d ' ')" = 3 ] || die "Devora db/init 는 정확히 $DEVORA_INIT_SQL 이어야 합니다"
   [ -d "$DM/docs/spec" ] && [ ! -L "$DM/docs/spec" ] || die "Devora 미디어에 docs/spec 이 없습니다"
-  : > "$WORK/devora.sumnames"
-  while read -r h n rest; do
-    [ -n "${h:-}" ] || continue
-    n="${n#\*}"
-    [ -z "${rest:-}" ] && is_hex64 "$h" || die "Devora SHA256SUMS 형식 오류"
-    case "/$n/" in //*|*/../*|*/./*) die "Devora SHA256SUMS 에 안전하지 않은 경로가 있습니다: $n" ;; esac
-    regular_file "$DM/$n" || die "Devora SHA256SUMS 의 파일이 없습니다: $n"
-    [ "$(sha256_of "$DM/$n")" = "$h" ] || die "Devora 미디어 해시 불일치: $n"
-    printf '%s\n' "$n" >> "$WORK/devora.sumnames"
-  done < "$DM/SHA256SUMS"
+  devora_check_sums "$DM" "$WORK/devora.sumnames"
   for f in images/devora-images.tar db/init/001_init.sql db/init/002_rag_document_mgmt.sql db/init/003_dashboard_cols.sql; do
     grep -qxF "$f" "$WORK/devora.sumnames" || die "Devora SHA256SUMS 가 $f 를 포함하지 않습니다"
   done
@@ -564,8 +595,11 @@ if [ "$DEVORA" -eq 1 ]; then
     [ "$(sha256_of "$f")" != "$env_hash" ] || die "Devora 미디어에 운영자 env 와 같은 파일이 있습니다 (비밀값 혼입 거부)"
   done < <(find "$DM" -type f ! -name 'devora-images.tar')
   mkdir "$ROOT/devora-media"
-  (cd "$DM" && COPYFILE_DISABLE=1 tar -cf - .) | tar -xf - -C "$ROOT/devora-media" || die "Devora 미디어 복사 실패"
+  # cp -R keeps byte-exact (Unicode) names; BSD tar pipelines can mangle them. Re-verify the copy.
+  cp -R "$DM/." "$ROOT/devora-media/" || die "Devora 미디어 복사 실패"
   [ -z "$(find "$ROOT/devora-media" -mindepth 1 ! -type f ! -type d)" ] || die "복사한 Devora 미디어에 일반 파일이 아닌 항목이 있습니다"
+  devora_check_sums "$ROOT/devora-media" "$WORK/devora.copied"
+  cmp -s "$WORK/devora.sumnames" "$WORK/devora.copied" || die "복사한 Devora 미디어 목록이 원본과 다릅니다"
   log "Devora 미디어 포함: devora-media/ ($(grep -c . "$WORK/devora.sumnames")개 해시 확인)"
 fi
 
@@ -581,7 +615,8 @@ fi
   printf 'product_requires=%s\n' "$(printf '%s' "$PRODUCT_REQUIRES" | tr ' ' ',')"
   printf 'manifest_tool_capabilities=%s\n' "$TOOL_CAPS"
   printf 'source_commit=%s\n' "$COMMIT"
-  printf 'source_ref=%s\n' "${REF:-}"
+  printf 'source_ref=%s\n' "${REF:-v$KIT_VERSION}"
+  if [ -n "$REF" ]; then printf 'source_ref_kind=git-ref-verified\n'; else printf 'source_ref_kind=label-derived\n'; fi
   printf 'installer_archive=%s\n' "$(basename "$INSTALLER_ARCHIVE")"
   printf 'installer_archive_sha256=%s\n' "$INSTALLER_ARCHIVE_HASH"
   printf 'installer_binary_original_name=%s\n' "$INSTALLER_BIN"

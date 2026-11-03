@@ -178,15 +178,84 @@ validate_media() {
   fi
 }
 
+# Optional DEVORA_CA_BUNDLE_FILE: absolute host path of a public PEM bundle (approved private roots
+# plus public roots, since SSL_CERT_FILE replaces the default pool). When set, an ephemeral override
+# (owned temp dir, removed on exit) adds ONE read-only shared-label (z) file bind to api and
+# SSL_CERT_FILE. Only shape is checked (PEM certs, no key); CA cryptography is not validated.
+CA_TARGET="/etc/devora/ca/ca-bundle.pem"
+CA_ARGS=()
+CA_TMP=""
+CA_TMP_ROOT=""
+# Bounded cleanup: remove only our own regular ca.override.yml, then rmdir. Anything unexpected
+# (symlink, extra entries, failure) is retained and reported; never recursive deletion.
+cleanup_ca() {
+  local t="$CA_TMP" f
+  [ -n "$t" ] && [ -n "$CA_TMP_ROOT" ] || return 0
+  CA_TMP=""
+  f="$t/ca.override.yml"
+  case "$t" in "$CA_TMP_ROOT"/devora-ca.*) ;; *) log "CA override temp dir retained (unexpected path): $t"; return 0 ;; esac
+  case "${t#"$CA_TMP_ROOT"/devora-ca.}" in ''|*/*) log "CA override temp dir retained (unexpected path): $t"; return 0 ;; esac
+  if [ ! -d "$t" ] || [ -L "$t" ] || [ "$(cd -P "$t" 2>/dev/null && pwd)" != "$t" ] \
+     || [ "$(ls -A -- "$t" 2>/dev/null)" != ca.override.yml ] || [ ! -f "$f" ] || [ -L "$f" ]; then
+    log "CA override temp dir retained (unexpected contents): $t"; return 0
+  fi
+  rm -f -- "$f" && rmdir -- "$t" 2>/dev/null || log "CA override temp dir retained (cleanup failed): $t"
+  return 0
+}
+prepare_ca() {
+  local p d
+  p="$(env_get DEVORA_CA_BUNDLE_FILE)"
+  [ -n "$p" ] || return 0
+  case "$p" in /*) ;; *) die "DEVORA_CA_BUNDLE_FILE must be absolute" ;; esac
+  printf '%s' "$p" | LC_ALL=C grep -q '[[:cntrl:]]' && die "DEVORA_CA_BUNDLE_FILE contains control characters"
+  case "$p" in *'"'*|*\\*|*'$'*|*'/./'*|*'/../'*|*/.|*/..|*//*) die "DEVORA_CA_BUNDLE_FILE has unsafe characters or components" ;; esac
+  [ -f "$p" ] && [ ! -L "$p" ] || die "DEVORA_CA_BUNDLE_FILE missing, not a regular file, or symlink"
+  d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || die "DEVORA_CA_BUNDLE_FILE directory unreadable"
+  [ "$d/$(basename "$p")" = "$p" ] || die "DEVORA_CA_BUNDLE_FILE path must not traverse symlinks"
+  [ -r "$p" ] && [ -s "$p" ] || die "DEVORA_CA_BUNDLE_FILE unreadable or empty"
+  grep -q 'PRIVATE KEY' "$p" && die "DEVORA_CA_BUNDLE_FILE must not contain private key material"
+  grep -qx -- '-----BEGIN CERTIFICATE-----' "$p" || die "DEVORA_CA_BUNDLE_FILE has no PEM certificate"
+  local nb ne
+  nb="$(grep -c -- '^-----BEGIN CERTIFICATE-----$' "$p" || true)"
+  ne="$(grep -c -- '^-----END CERTIFICATE-----$' "$p" || true)"
+  [ "$(grep -c -- '^-----BEGIN ' "$p" || true)" = "$nb" ] && [ "$(grep -c -- '^-----END ' "$p" || true)" = "$ne" ] \
+    || die "DEVORA_CA_BUNDLE_FILE must contain only PEM CERTIFICATE blocks"
+  [ "$nb" -gt 0 ] && [ "$nb" = "$ne" ] || die "DEVORA_CA_BUNDLE_FILE BEGIN/END CERTIFICATE counts do not match"
+  local root t
+  root="$(cd -P "${TMPDIR:-/tmp}" 2>/dev/null && pwd)" || die "temp directory unusable"
+  t="$(mktemp -d "$root/devora-ca.XXXXXX")" || die "could not create CA override temp dir"
+  case "$t" in "$root"/devora-ca.*) ;; *) die "unexpected CA override temp dir" ;; esac
+  case "${t#"$root"/devora-ca.}" in ''|*/*) die "unexpected CA override temp dir" ;; esac
+  [ -d "$t" ] && [ ! -L "$t" ] && [ "$(cd -P "$t" 2>/dev/null && pwd)" = "$t" ] \
+    || die "CA override temp dir is not a plain directory (retained: $t)"
+  CA_TMP="$t"; CA_TMP_ROOT="$root"
+  trap cleanup_ca EXIT
+  cat > "$CA_TMP/ca.override.yml" <<EOF
+services:
+  api:
+    environment:
+      SSL_CERT_FILE: "$CA_TARGET"
+    volumes:
+      - type: bind
+        source: "$p"
+        target: "$CA_TARGET"
+        read_only: true
+        bind:
+          selinux: z
+EOF
+  CA_ARGS=(-f "$CA_TMP/ca.override.yml")
+  log "using DEVORA_CA_BUNDLE_FILE (read-only, SSL_CERT_FILE=$CA_TARGET)"
+}
+
 # Compose provider: the installer exports DEVORA_COMPOSE_BINARY (its standalone Compose CLI; for
 # Podman the caller also exports DOCKER_HOST for the Podman socket). Otherwise `<rt> compose`.
 # Python podman-compose is never required.
 compose() {
   if [ -n "${DEVORA_COMPOSE_BINARY:-}" ]; then
     [ -x "$DEVORA_COMPOSE_BINARY" ] || die "DEVORA_COMPOSE_BINARY is not executable"
-    set -- "$DEVORA_COMPOSE_BINARY" -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+    set -- "$DEVORA_COMPOSE_BINARY" -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} "$@"
   else
-    set -- "$RUNTIME" compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
+    set -- "$RUNTIME" compose -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} "$@"
   fi
   DEVORA_ENV_FILE="$ENV_FILE" DEVORA_MEDIA_DIR="$MEDIA" \
   DEVORA_BE_IMAGE="$(env_get DEVORA_BE_IMAGE)" API_BIND="$(env_get API_BIND)" API_PORT="$(env_get API_PORT)" \
@@ -263,6 +332,7 @@ do_bootstrap() {
 
 validate_env
 validate_media
+case "$ACTION" in validate|bootstrap|start) prepare_ca ;; esac
 case "$ACTION" in
   validate) compose config -q; log "validate ok" ;;
   load)

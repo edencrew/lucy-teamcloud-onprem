@@ -101,3 +101,16 @@ Exit 0 = success; non-zero with `devora: ERROR: …` on stderr. Env values are n
 - Health: `GET /health`, `GET /readyz` (readiness is not JWT/model acceptance). Embedding startup
   retries 20×15s; installer must not assume a 30s readiness.
 - No existing DB migration, no deletion, no automatic old-DB upgrade.
+
+## Optional CA bundle (`DEVORA_CA_BUNDLE_FILE`)
+- Optional env key; empty/absent leaves argv and Compose config unchanged. Not a required key.
+- When set, `validate`/`bootstrap`/`start` check it and pass one extra `-f <owned temp>/ca.override.yml`
+  (temp dir mode 0700, removed on exit) that adds to `api` only: a `type: bind` of that file,
+  `read_only: true`, `bind.selinux: z` (shared label; the file may also be trusted by TC) at
+  `/etc/devora/ca/ca-bundle.pem`, and `SSL_CERT_FILE=/etc/devora/ca/ca-bundle.pem`. Nothing else changes
+  (API bind, auth, SQL `ro,Z` mounts, services). `stop`/`status`/`load` ignore it.
+- Checks: absolute; no control chars, `"`, `\`, `$`, `//`, `.`/`..` components; regular file reached
+  without symlinks; non-empty; only `-----BEGIN CERTIFICATE-----` blocks; no `PRIVATE KEY`. LF only.
+  Certificate cryptography/expiry is NOT validated. The body is never logged.
+- `SSL_CERT_FILE` replaces the default pool: the bundle must contain approved private roots AND the
+  public roots needed for HTTPS LLM/OIDC endpoints. The installer does not copy or create this file.
