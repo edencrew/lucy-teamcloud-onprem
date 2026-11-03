@@ -22,8 +22,13 @@ services:
       - "${TC_HTTP_PORT:-80}:80"
       - "${TC_HTTPS_PORT:-443}:443"
     volumes:
-      - ${TC_PAYLOAD_DIR:-.}/${TC_GW_CONFIG:-nginx/nginx.conf}:/etc/nginx/nginx.conf:ro
+      # 설정은 템플릿으로만 읽고, stock entrypoint 가 resolver 를 채워 컨테이너 내부 /etc/nginx/nginx.conf 로 렌더링한다(재기동한 서비스 IP 를 요청 시 재조회).
+      - ${TC_PAYLOAD_DIR:-.}/${TC_GW_CONFIG:-nginx/nginx.conf}:/etc/nginx/templates/nginx.conf.template:ro
       - ./nginx/certs:/etc/nginx/certs:ro
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      NGINX_ENVSUBST_FILTER: ^NGINX_LOCAL_RESOLVERS$$
     depends_on:
       db:
         condition: service_healthy

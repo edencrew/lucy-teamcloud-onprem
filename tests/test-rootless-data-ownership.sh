@@ -44,6 +44,12 @@ if [ -n "$DC" ]; then
   svc_block "$P" git | grep -qE 'USER_GID: "?4343"?$' || fail "git USER_GID must follow HOST_GID"
   expect "$P" tc-be 'keep-id:uid=1001,gid=1001' '1001:1001'
   svc_block "$P" tc-be | grep -q 'target: /data/studio-releases' || fail "tc-be studio-release mount"
+  svc_block "$P" tc-be | grep -qE '^      net\.ipv4\.ip_unprivileged_port_start: "?0"?$' \
+    || fail "tc-be must allow nonroot bind of internal :80 via netns sysctl"
+  for s in gw db broker git auth-be tc-fe auth-fe studio-dl; do
+    if svc_block "$P" "$s" | grep -q 'ip_unprivileged_port_start'; then fail "$s must not set ip_unprivileged_port_start"; fi
+  done
+  svc_block "$P" tc-be | grep -qE '^    cap_add:' && fail "tc-be must not add capabilities"
   svc_block "$P" studio-dl | grep -A4 'target: /srv/studio' | grep -q 'read_only: true' || fail "studio-dl must stay read-only"
   for s in gw auth-be tc-fe auth-fe studio-dl; do none "$P" "$s"; done
   svc_block "$P" db | grep -q 'target: /var/lib/postgresql/data' || fail "db data mount"
