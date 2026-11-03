@@ -1,13 +1,14 @@
 # 온프렘 인프라 재설계 — 구현·검증 기록
 
-상태: 오프라인 결합 검증 통과, 미출시, 실제 Linux 수용 대기. 전체 Goal acceptance는 끝나지 않았습니다.
+상태(시점 구분): 이 문서는 이력 기록입니다. §1–§3 본문은 초기 설계·source·오프라인/모의 검증 단계의 기록이고, §3.x의 2026-11-03 결과는 이후 범위를 한정한 격리 Linux 시험입니다. 그 뒤 source `39d4d2b` 기준 TC 전용 kit의 실제 설치와 Studio 업로드 HTTP 201도 한정된 lab 관찰로 확인됐지만, 전체 TC/Devora/TUI/Docker/restore 수용은 아닙니다.
+현재 소스는 로컬 통합 후보이며 미출시입니다. 공식 Release·kit 지원이나 전체 Goal acceptance 완료를 뜻하지 않습니다.
 승인된 task/Go 개발 원본 반영 여부와 검증 시각은 실행 작업자의 port-followup-integration.json에 기록합니다.
 실행 작업자 소유 범위는 candidate 구현, 오프라인 검증, 전제조건을 확인한 task/Go 반영입니다.
 부모가 최종 acceptance·통합·Wiki 연속성 기록을 소유합니다. 고객 서버·VM·실제 엔진 작업은 실행하지 않았습니다.
 
-## 1. 작업 공간과 보존 기준
+## 1. 작업 공간과 보존 기준 (초기 이력)
 
-- Git task: `installer-target-contract`, base/HEAD `b37b46a77c5ef2f0054ee75f443a185837e9a6e2`.
+- 초기 Git task(당시 기준): `installer-target-contract`, base/HEAD `b37b46a77c5ef2f0054ee75f443a185837e9a6e2`.
 - onprem main의 기존 Modified 8 + Untracked 2는 candidate 출발점으로 수입했습니다.
   `.gitignore`, `README.docker.md`, `README.md`, `README.podman.md`,
   `dev/studio-dist-local/README.md`, `dmz/README.docker.md`, `dmz/README.md`, `dmz/README.podman.md`,
@@ -108,10 +109,11 @@ candidate의 before 대비 증분(stage1/A2 승계 포함):
 - `installer/tui.go`
 - `installer/tui_test.go`
 
-### 3.x Rootless 영속 데이터 소유권 (일부 Linux 검증, 미통합)
+### 3.x Rootless 영속 데이터 소유권 (일부 Linux 검증, 미출시)
 
-- 정책(Podman compose 만, Docker compose 불변): 데이터를 쓰는 비 root 이미지 사용자에 호스트 설치 계정을 `userns_mode: keep-id:uid=N,gid=N` 으로 매핑하고 `user` 를 같은 숫자로 고정한다. TC `db`·Devora `postgres` 999(initdb 부터 root 미경유), `broker` 1883, `git` 은 `keep-id:uid=${HOST_UID},gid=${HOST_GID}` + `user: "0:0"`(stock entrypoint 가 root 로 git 사용자를 USER_UID 로 맞춘 뒤 내려감).
-- `git/gitea-entrypoint.sh` 는 `/data/gitea`, `conf`, `app.ini`, `.admin-created` 를 숫자 `USER_UID:USER_GID` 로 생성한다(새로 만든 디렉터리만 chown, 파일은 `su-exec`; 재귀 chown 없음). 숫자가 아니면 데이터 생성 전에 실패한다. Docker 는 같은 기본값(1000)으로 동일하게 동작한다.
+- 정책(keep-id 매핑은 Podman compose 만): 데이터를 쓰는 비 root 이미지 사용자에 호스트 설치 계정을 `userns_mode: keep-id:uid=N,gid=N` 으로 매핑하고 `user` 를 같은 숫자로 고정한다. TC `db`·Devora `postgres` 999(initdb 부터 root 미경유), `broker` 1883, `git` 은 `keep-id:uid=${HOST_UID},gid=${HOST_GID}` + `user: "0:0"`(stock entrypoint 가 root 로 git 사용자를 USER_UID 로 맞춘 뒤 내려감).
+- `git/gitea-entrypoint.sh` 는 `/data/gitea`, `conf`, `app.ini`, `.admin-created` 를 숫자 `USER_UID:USER_GID` 로 생성한다(새로 만든 디렉터리만 chown, 파일은 `su-exec`; 재귀 chown 없음). 숫자가 아니면 데이터 생성 전에 실패한다. 이 entrypoint 는 Docker/Podman 공용이므로 Docker 경로도 변경됐다(같은 기본값 1000 기대, 실제 Docker 엔진 미검증).
+- Docker Compose 도 불변이 아니다: gateway 는 nginx template mount, 동적 DNS resolver 와 변수 `proxy_pass` 로 backend 를 해석하도록 바뀌었다(`compose.docker.yml`·`compose.podman.yml` 공통). tc-be 의 namespaced low-port `sysctl`(`net.ipv4.ip_unprivileged_port_start`)은 현재 `compose.podman.yml` 에만 있다. 실제 Docker 엔진 회귀, 변수 `proxy_pass` 의 encoded-URI 전달 동작, 기존 데이터의 keep-id UID 이전은 미검증·미해결이다. 기존 데이터를 재귀 chown 하거나 자동 이전으로 취급하지 않는다.
 - Devora media 의 SQL/docs 읽기 전용 mount 에 SELinux `:ro,Z` 를 붙였다. 0777, label 비활성화, privileged, 전역 설정은 쓰지 않는다.
 - tc-be/Studio: `keep-id:uid=1001,gid=1001` + `user: "1001:1001"`. 근거는 고정 이미지 아카이브의 source 증거(실행 아님): config `User=appuser`, rootfs `/etc/passwd` appuser 1001:1001, `/data/studio-releases` 1001:1001 0755, `app/entrypoint.sh`(0 소유 0755)는 `prisma migrate deploy` 후 `exec node` 만 하고 chown/chmod/su-exec·root 요구가 없다. `tc/tc-entrypoint.sh` 도 secrets export → `exec ./entrypoint.sh` 뿐이다. 그래서 logs·Studio 쓰기는 호스트 설치 계정 소유, 호스트 계정 소유 secret/cert/license 는 컨테이너에서 1001 로 읽힌다. 이미지·BE 코드·기존 볼륨 소유권은 바꾸지 않았다. 이전 `user: "0:0"` 으로 만든 기존 `studio-release` 볼륨 루트(이전 매핑의 subordinate 1001)는 새 매핑에서 1001 이 아니므로 아래 이전 절차 대상이다(자동 chown 없음).
 - 일반 규칙: 비 root 이미지 사용자의 숫자 UID/GID 는 이미지 config `User` 와 rootfs `/etc/passwd`·데이터 디렉터리 소유·entrypoint 의 root 요구 여부로 증명한 뒤에만 keep-id 로 매핑한다.
@@ -120,16 +122,16 @@ candidate의 before 대비 증분(stage1/A2 승계 포함):
 - 설치기(Go, 읽기 전용 확인·변경 없음): `config.go:80` allowlist 가 `compose.podman.yml` 을 그대로 payload 로 복사하므로 `userns_mode`/`user` 는 재생성 없이 보존된다. `namespace.go:136-147` 의 서비스 UID 는 고정 숫자가 아니라 `image-specific/unknown` 이고, 백업은 namespace 안 `tar --numeric-owner`, 복원은 `podman unshare chown +UID:+GID`(`namespace.go:800`) 다. `podman unshare` 는 keep-id 가 아닌 기본 매핑(호스트 계정 = 0)으로 보므로 keep-id 데이터는 아카이브에 0 으로 기록·복원된다. 같은 ROOT·같은 매핑 안의 왕복은 일관되지만, 매핑을 바꾸는 이전에는 그대로 쓸 수 없다. 이전은 이 live-install 작업 범위 밖이며 backup/restore 정책 변경은 담당자 결정으로 보류한다.
 - 설치기 전달·ROOT source 추적(실행 증거 아님): ops 경로는 `ops.go`의 `composeArgv`로 `--project-directory ROOT`와 릴리스 payload Compose를 직접 사용하고, `config --format json` 결과는 검증만 한다. legacy 경로는 `runtime.go` → `docker.go:TransformComposeSpec`의 `map[string]any`를 저장하며 build/pull policy·포트·init restart 등의 한정 변환에 `userns_mode`/`user` 삭제는 없다. local override allowlist에도 두 키가 없어 변경 시 거부한다. TC bind는 ROOT 기준, 제품 설정은 `TC_PAYLOAD_DIR` 기준이며 Devora는 `ROOT/devora/{devora.env,media}`로 전달된다(`devora.go`). named volume과 image storage 위치는 ROOT와 별도로 Podman GraphRoot를 따른다. 외부 CA 등 운영자가 명시한 별도 경로는 별도 입력 계약이며 현재 소스에 고정된 Devora CA mount는 없다. 실제 생성 JSON·엔진 inspect와 비기본 ROOT의 실행 수용은 별도다.
 - 기존 데이터 이전 절차(자동화 없음, 명시 승인 시에만): ① 해당 서비스를 정지한다(`--root <ROOT> --runtime podman` 명시). ② 기존 UID/GID 매핑 fingerprint 를 기록한다(`podman unshare cat /proc/self/uid_map`, `/etc/subuid`·`/etc/subgid` 해당 계정 줄, 서비스별 `podman unshare stat -c '%u:%g'` 결과, 사용 중인 compose 사본의 hash). ③ 정지 상태에서 bind 데이터와 named volume 을 숫자 소유자·권한·mtime 메타데이터와 함께 일관 백업하고 기존 compose/매핑 사본을 보존한다. ④ 운영자가 서비스별 대상 디렉터리만 범위로 승인한 이전을 수행한다(blind/전체 재귀 chown 금지). ⑤ rootless+SELinux Enforcing 에서 기동·쓰기·재시작 후 소유권을 네이티브로 검증한다. ⑥ 실패 시 보존한 이전 compose/매핑과 백업 데이터로 되돌린다. 서비스가 쓰기나 스키마 migration 을 한 뒤에는 자동 rollback 하지 않는다. named volume 객체 제거는 Podman CLI(`podman volume rm`)로만 하고 GraphRoot 메타데이터를 직접 지우지 않는다. 고객 식별자·IP·secret 은 이 문서와 Git 에 기록하지 않는다.
-- 검증 도구: `tests/test-rootless-data-ownership.sh`는 Compose의 userns/user/mount·HOST_UID 전파와 래퍼를 렌더/모의 검사한다. `tests/test-devora.sh`는 별도 Devora 회귀 검사다. 실제 서비스 검증 범위는 아래와 같으며, tc-be 기동·migration·Studio 업로드와 기존 볼륨 이전은 포함하지 않는다. 기존 producer allowlist가 변경 런타임 파일을 포함하지만 새 제품 kit는 아직 없다.
+- 검증 도구: `tests/test-rootless-data-ownership.sh`는 Compose의 userns/user/mount·HOST_UID 전파와 래퍼를 렌더/모의 검사한다. `tests/test-devora.sh`는 별도 Devora 회귀 검사다. 실제 서비스 검증 범위는 아래와 같으며, tc-be 기동·migration·Studio 업로드와 기존 볼륨 이전은 포함하지 않는다. 기존 producer allowlist가 변경 런타임 파일을 포함하지만 이 기록 시점에는 새 제품 kit가 없었다. 아래 2026-11-03 서비스·migration·kit 관련 서술은 그 단계의 이력이며 현재 전체 Goal 상태가 아니다.
 
 - 2026-11-03 실제 격리 Linux 결과: Rocky 9.8 / Podman 5.8.2, rootless·SELinux Enforcing, UID와 GID가 다른 일반 계정 및 비기본 ROOT에서 TC PG17·Broker·Devora PG16/Redis의 실제 생성 파일을 검사했다. 정상 중지 뒤 일반 셸의 하위 조회·복사본 생성/수정/삭제(원본 불변, sudo/unshare 없음), recreate 뒤 DB 트랜잭션·MQTT retained 값·Redis 값 보존이 통과했다. 시험은 TC PG → Broker → Devora PG/Redis phase와 별도 PG/Gitea pair 범위이며 전체 stack 동시 기동은 하지 않았다.
-- Studio는 source-configured tc-be 이미지의 Node 쓰기 probe로 named volume의 실제 host 소유권과 native CRUD만 확인했다. 실제 tc-be 기동·migration·Studio 업로드/API, Devora API가 생성한 AI 데이터, 실제 Docker 엔진 회귀 및 RHEL 9 / Podman 5.6은 미검증이다. Docker Compose 원문 불변·렌더/공유 wrapper 모의 회귀는 실제 Docker 수용과 구분한다.
+- Studio는 source-configured tc-be 이미지의 Node 쓰기 probe로 named volume의 실제 host 소유권과 native CRUD만 확인했다. 실제 tc-be 기동·migration·Studio 업로드/API, Devora API가 생성한 AI 데이터, 실제 Docker 엔진 회귀 및 RHEL 9 / Podman 5.6은 미검증이다. Docker Compose 렌더/공유 wrapper 모의 회귀는 실제 Docker 수용과 구분한다(Docker Compose 는 위 gateway 변경으로 원문 불변이 아니다).
 - Gitea 실패 이력은 보존했다. 첫 구간에서는 디렉터리와 SSH host key 6개가 subordinate 소유로 남았다. 추가 구간에서는 고정 이미지의 stock SSH setup이 key를 무조건 `root:root`로 바꾸는 것을 확인했다. 이를 보정한 첫 실제 시도는 계정 등록 전 `ssh-keygen`의 `getpwuid` 요구로 실패했다(`No user exists for uid …`). 모의 검사의 glob 인자 순서 단언 오류도 따로 기록했으며, 실패 트리는 chown/삭제하지 않았다.
 - 현재 Gitea 소스: Podman만 `TC_GITEA_SSH_KEY_OWNER=data`를 설정한다. 래퍼는 stock SSH setup의 알려진 계약을 확인하고 컨테이너의 비영속 레이어에서 데이터 소유 key의 root 재chown만 건너뛴다. 없는 key는 보호된 `/tmp` 디렉터리에서 생성한 뒤 `USER_UID:USER_GID`가 noclobber로 새 영속 파일을 쓴다. 임시 정리는 생성한 여섯 파일로 제한한다. SSH 디렉터리 0700·key 0600과 root sshd는 유지하며, 미지 계약·생성 실패·개인키 없는 기존 공개키는 시작을 거부한다. 기존 key의 자동 소유권 이전은 하지 않는다. Docker는 이 정책을 켜지 않아 stock SSH setup을 그대로 쓴다.
 - Gitea 실제 검증(2026-11-03 08:08:58–08:09:37 UTC): 고정 Gitea 1.25.3/linux-amd64 이미지로 Rocky 9.8·Podman 5.8.2 rootless·SELinux Enforcing에서 health, 관리자 생성, REST 저장소 생성이 통과했다. UID/GID가 다른 호스트 실행 계정 소유로 key 6개와 전체 데이터가 생성됐고, 재귀 검사 146항목에서 다른 소유자가 없었다. 실제 Git SSH `ls-remote`는 고정 known_hosts와 등록한 테스트 키로 통과했다.
 - 같은 시험에서 정상 중지 뒤 일반 계정의 복사본 조회·수정·삭제가 통과했다. 컨테이너 recreate 뒤 저장소 HEAD, key 6개의 내용·권한·소유자와 SSH fingerprint가 유지됐고 실제 Git SSH 조회도 다시 통과했다. 마지막 정상 중지 후 링크·중첩 mount 없음과 정확한 대상을 확인하고 새 시험용 `<ROOT>/git/data` 한 곳 전체를 일반 `rm -r`로 삭제했다. sudo/unshare·volume 객체 삭제·엔진 metadata 삭제는 사용하지 않았다. 이는 승인된 새 폐기용 데이터 검사이며 기존 데이터 이행이 아니다.
-- 회귀 검사: `tests/test-rootless-data-ownership.sh`는 stock setup의 정책 off/on, 멱등성, 미지 계약, 기존 key 보존, getpwuid 전제와 keygen 실패를 검사했다. Docker Compose 원문 불변과 정책 off의 stock SSH 동작은 모의 검사 범위이며 실제 Docker 엔진 수용은 아니다.
-- 최종 범위는 미통합 source 후보와 위 Linux 서비스 증거다. 새 제품 kit는 없고 진단용 이미지 subset·source 시험 tar만 남겼다. 기존 producer/manifest fixture 통과는 최종 후보의 공식 kit 제작·설치 수용을 뜻하지 않는다. 시험 컨테이너는 정상 중지했고, 기존 실패 데이터·named volume·VM은 보존했다. 삭제 범위는 위 새 폐기용 Gitea bind 데이터 한 곳뿐이다. 위 backup/restore 매핑 설명은 source 추적이며 실제 복원 수용이 아니다.
+- 회귀 검사: `tests/test-rootless-data-ownership.sh`는 stock setup의 정책 off/on, 멱등성, 미지 계약, 기존 key 보존, getpwuid 전제와 keygen 실패를 검사했다. 정책 off의 stock SSH 동작은 모의 검사 범위이며 실제 Docker 엔진 수용은 아니다. 공용 Gitea entrypoint·gateway template 변경 뒤의 실제 Docker 엔진 회귀는 미검증이다.
+- 2026-11-03 당시 최종 범위(이력)는 미통합 source 후보와 위 Linux 서비스 증거였다. 그 단계에는 새 제품 kit가 없었고 진단용 이미지 subset·source 시험 tar만 남겼다. 기존 producer/manifest fixture 통과는 최종 후보의 공식 kit 제작·설치 수용을 뜻하지 않는다. 시험 컨테이너는 정상 중지했고, 기존 실패 데이터·named volume·VM은 보존했다. 삭제 범위는 위 새 폐기용 Gitea bind 데이터 한 곳뿐이다. 위 backup/restore 매핑 설명은 source 추적이며 실제 복원 수용이 아니다. 현재 범위는 미출시 로컬 통합 후보이며, 이후 TC 전용 kit 설치·Studio 업로드 201 관찰(상단 상태 참고)은 공식 kit·Release 지원이나 전체 TC/Devora/TUI/Docker/restore 수용을 뜻하지 않는다.
 
 ## 4. Linux/RHEL acceptance 갭
 

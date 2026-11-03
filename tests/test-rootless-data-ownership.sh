@@ -29,7 +29,7 @@ svc_block() { awk -v s="  $2:" '$0==s{p=1;next} p&&/^  [^ ]/{p=0} p&&/^[^ ]/{p=0
 expect() { # FILE SERVICE USERNS USER
   local b; b="$(svc_block "$1" "$2")"; [ -n "$b" ] || fail "$2 missing in rendered compose"
   grep -qE "^    userns_mode: \"?$3\"?$" <<<"$b" || fail "$2 userns_mode != $3: $(grep userns <<<"$b" || echo none)"
-  grep -qE "^    user: \"?$4\"?$" <<<"$b" || fail "$2 user != $4: $(grep 'user:' <<<"$b" || echo none)"
+  grep -qE "^    user: ($4|\"$4\"|'$4')$" <<<"$b" || fail "$2 user != $4: $(grep 'user:' <<<"$b" || echo none)"
 }
 none() { local b; b="$(svc_block "$1" "$2")"; [ -n "$b" ] || fail "$2 missing"
   grep -qE '^    userns_mode:' <<<"$b" && fail "$2 must keep the default rootless userns"; return 0; }

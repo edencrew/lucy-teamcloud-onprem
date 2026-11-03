@@ -16,6 +16,12 @@
 | TUI 설치의 상태·로그 보기 | [3.10 설치 후 상태와 로그](#310-설치-후-상태와-로그) |
 | 수동 설치의 운영·업데이트·백업 | [5. 운영](#5-운영), [6. 이미지 버전 업데이트](#6-이미지-버전-업데이트), [7. 백업과 복구](#7-백업과-복구) |
 | 문제 해결, 검증 범위 | [8. 문제 해결](#8-문제-해결), [9. 테스트 현황](#9-테스트-현황) |
+| 현재 kit-format2: TC 첫 조직, 선택 Devora 별도 실행 | [devora/README.md](devora/README.md#3-tc-첫-조직-초기화), [4. 단계별 standalone 설치](devora/README.md#4-단계별-standalone-설치) |
+
+아래 2~7장의 긴 절차는 레거시 보존 절차입니다. 현재 kit-format2 TC-only 설치 뒤의 첫 조직 초기화와
+선택 Devora(별도 승인, 독립 수명주기, late add-on 미지원)는 [devora/README.md](devora/README.md)를 따릅니다.
+rootless 영속 데이터 소유권(keep-id)은 새 데이터 기준이며 기존 데이터를 자동 이전하거나 재귀 chown하지 않습니다
+([README.infra-redesign.md](README.infra-redesign.md#3x-rootless-영속-데이터-소유권-일부-linux-검증-미출시)).
 
 ## 1. 대상과 범위
 
@@ -959,7 +965,18 @@ v0.0.22 설치기는 Go 테스트, 정적 빌드, Compose 설정 해석, 화면 
 실제 Rocky Linux 9 서버에서 설치를 끝내고 TLS 신뢰, 브라우저 로그인, MQTT 메시지 송수신,
 Studio 업로드까지 확인한 것은 아닙니다. rootless 바인드 마운트·subuid 매핑 권한과 API 소켓·linger,
 SELinux, 방화벽, 인증서와 NAT·DNS 경로는 설치할 서버에서 따로 점검해야 합니다.
-설치기가 이 설정을 대신 바꾸지는 않습니다.
+설치기가 이 설정을 대신 바꾸지는 않습니다(위 문단은 레거시 v0.0.22 기준).
+
+미릴리스 kit-format2 격리 실험실 관찰(2026-11-03 UTC, Rocky Linux 9 계열·rootless Podman·SELinux Enforcing
+시험 환경 한정, 공개 Release·production 수용 아님): TC-only TUI로 TC 9개 서비스 설치, 일반 HTTPS OIDC 로그인,
+`POST /api/v1/system/initialize` `201`로 실제 조직 생성을 확인했습니다. 별도 standalone helper의 bootstrap exit 0·SQL
+초기화와 실제 model gateway embedding 1024·chat·SSE를 확인했습니다. `load`는 보조 도구의 240초 timeout으로 제품 helper
+성공 종료 코드를 수집하지 못했고, 세 이미지 ID/platform 일치 확인 후 bootstrap으로 진행했으므로 전체 단계 exit 0 판정은
+아닙니다. 직접 HTTPS JWKS URI 적용 후 Devora health·readyz·auth/me 200, SSH 세션 없는 상태의 유지, 재부팅 뒤 수동
+기동 없는 복구, 재부팅 후 정식 `POST /v1/assist` SSE 200을 확인했습니다. legacy `/v1/chat`은 지원 검증 경로가 아닙니다.
+재부팅 결과는 시험에서 별도 준비한 Devora unit을 포함하며 이 저장소의 자동 등록 기능을 뜻하지 않습니다.
+Devora 포함 통합 TUI, Studio UI, 전체 설치 수용, production과 이 통합 source의 실제 엔진 재시험은 미검증입니다.
+준비 완료 관문과 세부 범위는 [devora/README.md](devora/README.md#8-검증-현황)를 봅니다.
 
 배포 압축 파일에는 게시 당시 문서가 들어 있습니다. 동봉 문서는 실행에 필요하지 않으며,
 내용이 다르면 이 안내서를 기준으로 합니다.
