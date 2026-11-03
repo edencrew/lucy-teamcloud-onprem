@@ -45,6 +45,10 @@ services:
     image: docker.gitea.com/gitea:1.25.3
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
+    # rootless: 호스트 설치 계정을 컨테이너의 USER_UID/USER_GID 로 매핑(keep-id)해 ./git/data 가 호스트 소유로 생성된다.
+    # 래퍼와 stock entrypoint(s6)는 root 로 시작해 git 사용자를 USER_UID 로 맞춘 뒤 내려가므로 user 는 root 로 고정한다.
+    userns_mode: "keep-id:uid=${HOST_UID:-1000},gid=${HOST_GID:-1000}"
+    user: "0:0"
     # 관리자 계정 마커(.admin-created)까지 확인해, 계정 생성 전에 tc-be 가 Gitea 를 호출하던 첫 부팅 경합을 막는다.
     # curl 은 Gitea 이미지에 포함. start_period 는 첫 부팅의 DB 마이그레이션 + 계정 생성 시간을 감안한 값.
     healthcheck:
@@ -62,6 +66,8 @@ services:
       - EXTERNAL_URL=${EXTERNAL_URL}
       - USER_UID=${HOST_UID:-1000}
       - USER_GID=${HOST_GID:-1000}
+      # stock s6 openssh setup 의 host key root chown 을 데이터 소유자 key 에 한해 건너뛰는 래퍼 opt-in(Podman 전용)
+      - TC_GITEA_SSH_KEY_OWNER=data
       - TZ=${TZ:-UTC}
       - GITEA__database__USER=${DB_USERNAME}
       - GITEA__database__PASSWD=${DB_PASSWORD}
@@ -78,6 +84,9 @@ services:
   db:
     image: docker.io/library/postgres:17
     platform: ${TARGET_PLATFORM:-linux/amd64}
+    # rootless: 호스트 설치 계정 = 컨테이너 postgres(999). initdb 부터 999 로 실행되어(root 미경유) 데이터가 호스트 소유.
+    userns_mode: "keep-id:uid=999,gid=999"
+    user: "999:999"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -98,6 +107,9 @@ services:
   broker:
     image: docker.io/library/eclipse-mosquitto:2.0.22
     platform: ${TARGET_PLATFORM:-linux/amd64}
+    # rootless: 호스트 설치 계정 = 컨테이너 mosquitto(1883). persistence/log 가 호스트 소유로 생성된다.
+    userns_mode: "keep-id:uid=1883,gid=1883"
+    user: "1883:1883"
     restart: unless-stopped
     volumes:
       - ${TC_PAYLOAD_DIR:-.}/broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,z
@@ -153,7 +165,10 @@ services:
   tc-be:
     image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.25
     platform: ${TARGET_PLATFORM:-linux/amd64}
-    user: "0:0"
+    # rootless: 호스트 설치 계정 = 이미지 기본 사용자 appuser(1001:1001). logs/Studio 쓰기는 호스트 계정 소유,
+    # 호스트 계정 소유 secret/cert/license 는 1001 로 읽힌다. app/entrypoint.sh 는 root 를 요구하지 않는다.
+    userns_mode: "keep-id:uid=1001,gid=1001"
+    user: "1001:1001"
     restart: unless-stopped
     depends_on:
       db:
@@ -193,8 +208,8 @@ services:
       - ./license:/app/license:ro,z
       - ./nginx/certs/server.crt:/certs/server.crt:ro,z
       - ./tc/logs:/app/logs:z
-      # 이미지가 /data/studio-releases 를 uid 1001 소유로 만들어 두어, 빈 named volume 이 첫 마운트 때 소유자를
-      # 물려받는다. bind mount 로 바꾸려면 호스트 디렉터리를 1001 소유로 만들어야 한다.
+      # 이미지의 /data/studio-releases 는 1001:1001 0755 다. keep-id 로 컨테이너 1001 = 호스트 계정이므로
+      # 새 볼륨의 Studio 파일은 호스트 계정 소유다. 이전 매핑으로 만든 기존 볼륨은 README 이전 절차 대상이다.
       - studio-release:/data/studio-releases
     entrypoint: ["/bin/sh", "/tc-entrypoint.sh"]
     networks:

@@ -26,8 +26,18 @@ for f in compose.docker.yml compose.podman.yml; do
   grep -q '/docs:/data/be_docs:ro' "$c" || fail "$f docs mount"
   grep -q '/db/init:/docker-entrypoint-initdb.d:ro' "$c" || fail "$f init mount"
   grep -q 'API_BIND:?' "$c" || fail "$f API_BIND"
-  grep -qE 'chown|777|user:' "$c" && fail "$f must not guess UID/chown"
+  grep -qE 'chown|777|label=disable|privileged' "$c" && fail "$f must not chown/weaken security"
   grep -qE 'entrypoint:' "$c" && fail "$f must preserve image entrypoints"
+  if [ "$f" = compose.docker.yml ]; then
+    grep -qE 'user:|userns_mode:' "$c" && fail "$f must not guess UID/userns"
+  else
+    # Podman: only postgres is pinned (image postgres=999, keep-id maps the host owner to it).
+    [ "$(grep -c 'userns_mode:' "$c")" = 1 ] && [ "$(grep -c 'user:' "$c")" = 1 ] || fail "$f only postgres may set user/userns"
+    awk '/^  [a-z]+:$/{s=$1} /userns_mode:|user:/{print s, $0}' "$c" | grep -v '^postgres: ' && fail "$f user/userns outside postgres"
+    grep -q 'userns_mode: "keep-id:uid=999,gid=999"' "$c" && grep -q 'user: "999:999"' "$c" || fail "$f postgres keep-id 999"
+    for m in '/db/init:/docker-entrypoint-initdb.d:ro,Z' '/docs/spec:/data/doc:ro,Z' '/docs:/data/be_docs:ro,Z'; do
+      grep -qF "$m" "$c" || fail "$f SELinux label on $m"; done
+  fi
   pass "static $f"
 done
 grep -q 'down -v' "$D/manage.sh" && grep -v '^#' "$D/manage.sh" | grep -q 'down -v' && fail "manage.sh must not down -v"

@@ -1,16 +1,22 @@
 # Devora optional add-on for Podman (separate Compose project "devora"). Same contract as
 # compose.docker.yml; images are fully qualified so Podman does not consult search registries.
-# Rootless runtime behaviour is unverified.
+# Rootless runtime behaviour is unverified. postgres runs keep-id as 999; redis/api keep the default
+# rootless userns: their fixed image configs have no non-root User (redis root default, entrypoint without
+# setuid; api User/Entrypoint null, Cmd granian), so no non-root uid is mapped or forced.
 name: devora
 
 services:
   postgres:
     image: docker.io/pgvector/pgvector:pg16
+    # rootless: 호스트 설치 계정 = 컨테이너 postgres(999); initdb 부터 999 로 실행(root 미경유).
+    userns_mode: "keep-id:uid=999,gid=999"
+    user: "999:999"
     restart: unless-stopped
     env_file: [ "${DEVORA_ENV_FILE:?DEVORA_ENV_FILE required}" ]
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/db/init:/docker-entrypoint-initdb.d:ro
+      # SELinux Enforcing: 운영자 media 디렉터리는 컨테이너 라벨이 없으므로 이 컨테이너 전용으로 relabel(Z).
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/db/init:/docker-entrypoint-initdb.d:ro,Z
     networks: [ devora ]
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
@@ -46,8 +52,8 @@ services:
     ports:
       - "${API_BIND:?API_BIND required}:${API_PORT:?API_PORT required}:8000"
     volumes:
-      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs/spec:/data/doc:ro
-      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs:/data/be_docs:ro
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs/spec:/data/doc:ro,Z
+      - ${DEVORA_MEDIA_DIR:?DEVORA_MEDIA_DIR required}/docs:/data/be_docs:ro,Z
       - aidata:/app/.local/ai-data
     depends_on:
       postgres: { condition: service_healthy }
