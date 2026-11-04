@@ -413,10 +413,11 @@ fake Docker 기반 로컬 회귀(제품 설치·pending 분기, 전체 `go test`
   없으며, 서명된 완전 오프라인 Engine RPM 패키지는 별도 제공 전까지 포함되지 않습니다.
 - TC 입력은 `.env` 의 `EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`,
   `LUCY_ADMIN_EMAIL/PASSWORD/NAME`, `DB_ROOT_PASSWORD`, `DB_USERNAME`, `DB_PASSWORD`,
-  `TZ`, `HOST_UID/GID`, `TARGET_PLATFORM` 로 렌더링됩니다. 비밀번호는 마스킹됩니다.
+  `TC_DB_NAME`, `AUTH_DB_NAME`, `GITEA_DB_NAME`, `TZ`, `HOST_UID/GID`, `TARGET_PLATFORM` 로
+  렌더링됩니다. 비밀번호는 마스킹됩니다.
 - Devora 를 `on` 으로 하면 두 페이지가 추가됩니다: `dv_media`, `dv_be_image`,
   `dv_api_port`, `dv_org_id`, `dv_ns_secret`, `dv_oidc_issuer/audience/jwks/allow/typ`,
-  `dv_db_password`, `dv_llm_url`, `dv_llm_key`, `dv_chat/design/script_model`,
+  `dv_db_user`, `dv_db_name`, `dv_db_password`, `dv_llm_url`, `dv_llm_key`, `dv_chat/design/script_model`,
   `dv_emb_backend`(openai|ollama), `dv_emb_model`, `dv_ollama_url`, `dv_ca_file`(선택).
   `dv_ns_secret`·`dv_db_password`·`dv_llm_key` 는 마스킹되며, 값은 TeamCloud 설치 후
   `ROOT/devora/devora.env` 에 0600 신규 생성으로만 기록되고 로그에 남지 않습니다.
@@ -436,8 +437,15 @@ fake Docker 기반 로컬 회귀(제품 설치·pending 분기, 전체 `go test`
 | --- | --- |
 | 런타임·소스·Compose 바이너리 | 조정 가능 (플래그) |
 | TC URL·관리자·DB 사용자/비밀번호·TZ | 조정 가능 (TUI) |
-| TC DB 이름 | TUI 필드 없음 |
+| TC DB 이름 (`tc_db_name` → `TC_DB_NAME`, 기본 `lucy_teamcloud`) | 조정 가능 (최초 설치에만 적용) |
+| Auth DB 이름 (`auth_db_name` → `AUTH_DB_NAME`, 기본 `lucy_auth`) | 조정 가능 (최초 설치에만 적용) |
+| Gitea DB 이름 (`gitea_db_name` → `GITEA_DB_NAME` → `GITEA__database__NAME`, 기본 `git`) | 조정 가능 (최초 설치에만 적용) |
 | Devora media·BE 이미지·API 포트·조직·OIDC·모델·임베딩·CA | 조정 가능 (TUI, 미정 값은 pending) |
 | Devora API 바인드 | `127.0.0.1` 고정 (의도된 보안 계약) |
-| Devora `POSTGRES_USER`/`POSTGRES_DB` | `devora` 고정 (현재 렌더러 지원 한계, 백엔드 불변 보장 아님) |
+| Devora `POSTGRES_USER`/`POSTGRES_DB` (`dv_db_user`/`dv_db_name`, 기본 `devora`) | 조정 가능 (최초 설치에만 적용) |
 | Devora `REDIS_URL`·`AUTH_MODE=enforce`·`APP_ENV=production` | 현재 렌더러 고정 |
+
+DB 식별자는 소문자 `[a-z_][a-z0-9_]{0,62}` 만 허용하며 `postgres`·`template0`·`template1`·`pg_*` 는
+거부합니다. TC·Auth·Gitea DB 이름은 서로 달라야 하며, 세 DB 모두 공유 `DB_USERNAME` 역할이 소유합니다
+(서비스별 역할 분리는 없음). 기존 데이터의 DB 이름 변경·재초기화는
+하지 않으므로 설치 후 값을 바꾸지 마세요 (키가 없는 기존 env 는 이전 기본값을 그대로 씁니다).

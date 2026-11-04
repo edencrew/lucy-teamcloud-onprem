@@ -89,6 +89,12 @@ validate_env() {
   case "$(env_get OIDC_JWKS_URI)" in https://*) ;; *) die "OIDC_JWKS_URI must be https" ;; esac
   local u p d
   u="$(env_get POSTGRES_USER)"; p="$(env_get POSTGRES_PASSWORD)"; d="$(env_get POSTGRES_DB)"
+  # Lowercase identifiers only; never echo the value (POSTGRES_PASSWORD shares the DSN).
+  for k in POSTGRES_USER POSTGRES_DB; do
+    v="$(env_get "$k")"
+    printf '%s' "$v" | LC_ALL=C grep -Eqx '[a-z_][a-z0-9_]{0,62}' || die "$k must match [a-z_][a-z0-9_]{0,62}"
+    case "$v" in postgres|template0|template1|pg_*) die "$k uses a reserved PostgreSQL name" ;; esac
+  done
   [ "$(env_get DATABASE_URL)" = "postgresql://$u:$p@postgres:5432/$d" ] \
     || die "DATABASE_URL must be postgresql://POSTGRES_USER:POSTGRES_PASSWORD@postgres:5432/POSTGRES_DB"
   case "$(env_get REDIS_URL)" in redis://redis:6379*) ;; *) die "REDIS_URL must point at dedicated redis service" ;; esac
@@ -119,8 +125,11 @@ validate_inventory() {
 }
 
 # Docker 28+ selects linux/amd64 explicitly; classic Docker/Podman inspect/save the single local image.
+# Probed only after validate_env so a rejected env never reaches the runtime.
 PLAT=()
-if [ "$RUNTIME" = docker ] && docker image save --help 2>/dev/null | grep -q -- '--platform'; then PLAT=(--platform linux/amd64); fi
+detect_plat() {
+  if [ "$RUNTIME" = docker ] && docker image save --help 2>/dev/null | grep -q -- '--platform'; then PLAT=(--platform linux/amd64); fi
+}
 
 # Prints "sha256:<config digest> os/arch" for a local ref; fails if absent. The ID is the canonical
 # config digest from a local save (same as prepare-media), never runtime .Id (may be index/manifest).
@@ -340,6 +349,7 @@ do_bootstrap() {
 }
 
 validate_env
+detect_plat
 validate_media
 case "$ACTION" in validate|bootstrap|start) prepare_ca ;; esac
 case "$ACTION" in

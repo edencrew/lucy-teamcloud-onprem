@@ -128,6 +128,28 @@ mut CORS_MODE web; run validate && fail "web CORS without origins must fail"
 cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
 pass "env rejection"
 
+# DB identifiers: nondefault user/DB with the matching DSN pass; invalid/reserved are refused before any
+# runtime call, and neither the identifier nor the password is echoed.
+dbenv() { sed -e "s|^POSTGRES_USER=.*|POSTGRES_USER=$1|" -e "s|^POSTGRES_DB=.*|POSTGRES_DB=$2|" \
+  -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=Sekr3tPw|" \
+  -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://$1:Sekr3tPw@postgres:5432/$2|" "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; }
+: > "$LOG"; dbenv dv_app dv_main; run validate || { cat "$WORK/err" >&2; fail "nondefault user/DB with matching DSN"; }
+grep -q 'config -q' "$LOG" || fail "nondefault user/DB must reach compose config"
+dbenv dv_app dv_main; sed -i.x "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://dv_app:Sekr3tPw@postgres:5432/devora|" "$ENV"
+rm -f "$ENV.x"; chmod 600 "$ENV"; run validate && fail "DSN DB mismatch must fail"
+for bad in Dv_app 1abc 'dv-app' postgres pg_monitor template0 template1 "a$(printf 'b%.0s' $(seq 1 63))"; do
+  for which in user db; do
+    if [ "$which" = user ]; then dbenv "$bad" dv_main; else dbenv dv_app "$bad"; fi
+    : > "$LOG"; run validate && fail "invalid/reserved $which '$bad' must fail"
+    [ -s "$LOG" ] && fail "invalid $which '$bad' must fail before any runtime call"
+    grep -q 'POSTGRES_USER\|POSTGRES_DB' "$WORK/err" || fail "invalid $which '$bad' error message"
+    grep -qF 'Sekr3tPw' "$WORK/err" && fail "password leaked in identifier error"
+    [ "$bad" != postgres ] && grep -qF -- "$bad" "$WORK/err" && fail "identifier value echoed"
+  done
+done
+cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
+pass "devora DB identifier contract"
+
 # Conditional embedding contract (mocked; no network, no dimension probe).
 grep -q '^OLLAMA_BASE_URL=$' "$ENV.bak" || fail "fixture must have empty OLLAMA_BASE_URL"
 run validate || { cat "$WORK/err" >&2; fail "openai without OLLAMA_BASE_URL must validate"; }

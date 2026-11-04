@@ -69,6 +69,12 @@ The helper does not probe the network or the vector dimension; a real 1024-dim e
 probe against the configured endpoint remains a pending runtime proof (Responses-only endpoints are
 incompatible).
 
+DB identity: `POSTGRES_USER`/`POSTGRES_DB` (installer `dv_db_user`/`dv_db_name`, default `devora`)
+must be lowercase `[a-z_][a-z0-9_]{0,62}` and not `postgres`/`template0`/`template1`/`pg_*`;
+`DATABASE_URL` must equal `postgresql://POSTGRES_USER:POSTGRES_PASSWORD@postgres:5432/POSTGRES_DB`.
+`manage.sh` refuses violations before any runtime call without echoing values. Applied on first
+install only; existing volumes are never renamed or reinitialised.
+
 ## Installer selection and install steps
 Selection is explicit: `--devora-env PATH --devora-media PATH` (both or neither; default OFF).
 `--devora-media` may point at the kit root `devora-media/`.
