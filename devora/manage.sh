@@ -14,7 +14,7 @@ REQUIRED_KEYS="DEVORA_BE_IMAGE API_BIND API_PORT APP_ENV AUTH_MODE CORS_MODE ORG
 PLAN_LOCK_ENABLED DEPLOYMENT_ORG_ID THREAD_NAMESPACE_SECRET TEAMCLOUD_BASE_URL OIDC_ISSUER OIDC_AUDIENCE
 OIDC_JWKS_URI OIDC_JWKS_HOST_ALLOWLIST OIDC_EXPECTED_TYP POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
 DATABASE_URL REDIS_URL LITELLM_BASE_URL LITELLM_MASTER_KEY CHAT_MODEL DESIGN_EDIT_MODEL SCRIPT_MODEL
-EMBEDDING_BACKEND EMBEDDING_MODEL OLLAMA_BASE_URL"
+EMBEDDING_BACKEND EMBEDDING_MODEL"
 
 die() { printf 'devora: ERROR: %s\n' "$*" >&2; exit 1; }
 log() { printf 'devora: %s\n' "$*" >&2; }
@@ -58,6 +58,15 @@ validate_env() {
     [ -n "$v" ] || die "required key empty or absent: $k"
     case "$v" in *CHANGE_ME*|*changeme*|*'<'*'>'*) die "placeholder value: $k" ;; esac
   done
+  # openai: embeddings + chat share LITELLM_BASE_URL/MASTER_KEY (required above); OLLAMA_BASE_URL optional.
+  # ollama: embeddings need a real OLLAMA_BASE_URL. Anything else fails closed.
+  case "$(env_get EMBEDDING_BACKEND)" in
+    openai) v="$(env_get OLLAMA_BASE_URL)"
+            case "$v" in *CHANGE_ME*|*changeme*|*'<'*'>'*) die "placeholder value: OLLAMA_BASE_URL" ;; esac ;;
+    ollama) v="$(env_get OLLAMA_BASE_URL)"; [ -n "$v" ] || die "EMBEDDING_BACKEND=ollama requires OLLAMA_BASE_URL"
+            case "$v" in *CHANGE_ME*|*changeme*|*'<'*'>'*) die "placeholder value: OLLAMA_BASE_URL" ;; esac ;;
+    *) die "EMBEDDING_BACKEND must be openai or ollama" ;;
+  esac
   [ "$(env_get APP_ENV)" = production ] || die "APP_ENV must be production"
   [ "$(env_get AUTH_MODE)" = enforce ] || die "AUTH_MODE must be enforce"
   [ "$(env_get ORG_SCOPE_ENABLED)" = 1 ] || die "ORG_SCOPE_ENABLED must be 1"

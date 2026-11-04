@@ -386,3 +386,58 @@ Manual entrypoints (scripts ship as 0644; invoke with `bash`, never `./`):
 `bash devora/prepare-media.sh <docker|podman> --be-repo DIR --be-image REF --out EMPTY_DIR` on the connected build host, and
 `bash devora/manage.sh <docker|podman> <validate|load|bootstrap|start|stop|status> --env-file /absolute/operator.env --media-dir /absolute/media` on the target.
 Keep the operator env at 0600 and outside the kit; do not paste it or its values into logs or tickets.
+
+### 일괄 설치 TUI 개발 후보 (미출시·설치 수용 안 됨)
+
+Eugene Docker/private format2 시험용 입력·실행 계약입니다. 미출시 후보(설치기 0.0.22,
+제품 라벨 0.0.26)이며, 소스와 실행파일 해시는 이 문서가 아니라 별도로 추적합니다.
+공개 r1 실행파일·키트에는 적용하지 않았습니다. 새 실행파일만 r1에 덮어쓰지 마세요.
+fake Docker 기반 로컬 회귀(제품 설치·pending 분기, 전체 `go test`/`go vet`)만 통과했고,
+실제 Linux Docker·SSH/PTY 설치·업데이트·서버/계정 이관 수용은 아직 없습니다.
+
+실행 (kit_format 2 키트 루트에서, `ssh -t` TTY 필요):
+
+```bash
+./teamcloud-installer --runtime docker --source "$PWD" \
+  --compose-binary "$PWD/docker-compose-linux-amd64"
+# 사전 준비된 operator env/media 를 쓸 때만:
+#   --devora-env /absolute/operator.env --devora-media /absolute/media
+```
+
+- 플래그는 `--runtime`, `--source`, `--compose-binary`, `--status`, `--demo`, `--version`,
+  `--devora-env`, `--devora-media` 뿐이며 `--package` 같은 플래그는 없습니다. 데모가 아니면
+  `--source` 가 kit_format 2 제품 키트인지 먼저 검사하고, 아니면 TUI 전에 종료합니다.
+- Docker 런타임은 기존 Docker 데몬에 Compose 로 직접 Up 하며 수명주기는 Docker 데몬이
+  담당합니다(Podman user systemd/linger 아님). Compose 는 `--compose-binary` →
+  `docker compose` 플러그인 → 동봉 standalone 순입니다. 코드로 강제하는 Engine 최소 버전은
+  없으며, 서명된 완전 오프라인 Engine RPM 패키지는 별도 제공 전까지 포함되지 않습니다.
+- TC 입력은 `.env` 의 `EXTERNAL_URL`, `BROKER_WS_URL`, `PUBLIC_BROKER_WS_URL`,
+  `LUCY_ADMIN_EMAIL/PASSWORD/NAME`, `DB_ROOT_PASSWORD`, `DB_USERNAME`, `DB_PASSWORD`,
+  `TZ`, `HOST_UID/GID`, `TARGET_PLATFORM` 로 렌더링됩니다. 비밀번호는 마스킹됩니다.
+- Devora 를 `on` 으로 하면 두 페이지가 추가됩니다: `dv_media`, `dv_be_image`,
+  `dv_api_port`, `dv_org_id`, `dv_ns_secret`, `dv_oidc_issuer/audience/jwks/allow/typ`,
+  `dv_db_password`, `dv_llm_url`, `dv_llm_key`, `dv_chat/design/script_model`,
+  `dv_emb_backend`(openai|ollama), `dv_emb_model`, `dv_ollama_url`, `dv_ca_file`(선택).
+  `dv_ns_secret`·`dv_db_password`·`dv_llm_key` 는 마스킹되며, 값은 TeamCloud 설치 후
+  `ROOT/devora/devora.env` 에 0600 신규 생성으로만 기록되고 로그에 남지 않습니다.
+- 아직 만들어지지 않은 실제 조직 UUID·JWKS·CA·모델 값은 비워 두세요. 임의 값, 예시 값,
+  다른 고객(Kyobo 등) 값은 금지입니다. 미입력이면 TeamCloud 만 설치되고 Devora 는
+  `devora-pending`(종료 코드 1, validate/load/bootstrap·파일·볼륨 미생성)입니다.
+- 같은 TUI 프로세스 안에서는 결과 화면에서 `c` 로 Devora 입력을 보완한 뒤 검토 화면에서
+  `INSTALL` 을 다시 입력해 Devora 만 재개합니다. 이 경우 확인은 두 번입니다.
+  재개는 이 세션의 설치 증거(receipt/.env/override/active-release)가 바뀌지 않았을 때만
+  허용되고, Devora 단계가 이미 시작됐으면 bootstrap 을 다시 하지 않습니다.
+  프로세스를 종료하면 재개 경로는 없으며, 기존 ROOT 는 재설치 대상 검사로 거부됩니다.
+  기존 데이터 위에 재설치·재bootstrap 하거나 ROOT·env·볼륨을 지우지 마세요.
+- private CA·OIDC 인증·TLS 검증은 완화하지 않습니다. 서비스 readiness 확인은
+  실제 로그인·조직·모델 업무 수용을 뜻하지 않습니다.
+
+| 항목 | 현재 후보 |
+| --- | --- |
+| 런타임·소스·Compose 바이너리 | 조정 가능 (플래그) |
+| TC URL·관리자·DB 사용자/비밀번호·TZ | 조정 가능 (TUI) |
+| TC DB 이름 | TUI 필드 없음 |
+| Devora media·BE 이미지·API 포트·조직·OIDC·모델·임베딩·CA | 조정 가능 (TUI, 미정 값은 pending) |
+| Devora API 바인드 | `127.0.0.1` 고정 (의도된 보안 계약) |
+| Devora `POSTGRES_USER`/`POSTGRES_DB` | `devora` 고정 (현재 렌더러 지원 한계, 백엔드 불변 보장 아님) |
+| Devora `REDIS_URL`·`AUTH_MODE=enforce`·`APP_ENV=production` | 현재 렌더러 고정 |

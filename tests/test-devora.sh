@@ -89,6 +89,7 @@ sed -e "s|^DEVORA_BE_IMAGE=.*|DEVORA_BE_IMAGE=reg.local/devora-be:e196ad2|" \
     -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=pw|" \
     -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://devora:pw@postgres:5432/devora|" \
     -e "s|^OIDC_JWKS_URI=.*|OIDC_JWKS_URI=https://idp.local/jwks|" \
+    -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=openai|" \
     -e "s|=CHANGE_ME$|=set|" "$D/.env.example" > "$ENV"
 chmod 600 "$ENV"
 
@@ -126,6 +127,31 @@ mut DATABASE_URL postgresql://x:y@tc-db:5432/z; run validate && fail "foreign DB
 mut CORS_MODE web; run validate && fail "web CORS without origins must fail"
 cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
 pass "env rejection"
+
+# Conditional embedding contract (mocked; no network, no dimension probe).
+grep -q '^OLLAMA_BASE_URL=$' "$ENV.bak" || fail "fixture must have empty OLLAMA_BASE_URL"
+run validate || { cat "$WORK/err" >&2; fail "openai without OLLAMA_BASE_URL must validate"; }
+grep -v '^OLLAMA_BASE_URL=' "$ENV.bak" > "$ENV"; chmod 600 "$ENV"
+run validate || { cat "$WORK/err" >&2; fail "openai with OLLAMA_BASE_URL absent must validate"; }
+mut LITELLM_BASE_URL ''; run validate && fail "openai without LITELLM_BASE_URL must fail"
+mut LITELLM_MASTER_KEY ''; run validate && fail "openai without LITELLM_MASTER_KEY must fail"
+mut EMBEDDING_MODEL ''; run validate && fail "openai without EMBEDDING_MODEL must fail"
+mut EMBEDDING_BACKEND ollama; run validate && fail "ollama without OLLAMA_BASE_URL must fail"
+grep -q 'requires OLLAMA_BASE_URL' "$WORK/err" || fail "ollama-without-url error message"
+sed -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=ollama|" -e "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=CHANGE_ME|" \
+  "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; run validate && fail "ollama placeholder OLLAMA_BASE_URL must fail"
+sed -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=ollama|" -e "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://ollama.local:11434|" \
+  "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; run validate || { cat "$WORK/err" >&2; fail "ollama with OLLAMA_BASE_URL must validate"; }
+for b in set huggingface OpenAI; do
+  mut EMBEDDING_BACKEND "$b"; run validate && fail "unknown backend $b must fail"
+  grep -q 'EMBEDDING_BACKEND must be openai or ollama' "$WORK/err" || fail "unknown backend $b error message"
+done
+mut AUTH_MODE off; run validate && fail "openai path must keep AUTH_MODE enforce guard"
+mut ORG_SCOPE_ENABLED 0; run validate && fail "openai path must keep ORG_SCOPE guard"
+mut PLAN_LOCK_ENABLED false; run validate && fail "openai path must keep PLAN_LOCK guard"
+mut OIDC_ISSUER ''; run validate && fail "openai path must keep OIDC guard"
+cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
+pass "conditional embedding backend contract"
 
 echo tampered >> "$M/images/devora-images.tar"; run validate && fail "checksum mismatch must fail"
 pass "media checksum"
