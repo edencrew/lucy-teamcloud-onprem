@@ -128,3 +128,13 @@ Exit 0 = success; non-zero with `devora: ERROR: …` on stderr. Env values are n
   Certificate cryptography/expiry is NOT validated. The body is never logged.
 - `SSL_CERT_FILE` replaces the default pool: the bundle must contain approved private roots AND the
   public roots needed for HTTPS LLM/OIDC endpoints. The installer does not copy or create this file.
+
+## Optional adopted API database (`DEVORA_API_DATABASE_URL`)
+- Optional env key; empty/absent leaves argv and Compose config unchanged (legacy default).
+- Format `postgresql://USER:PASSWORD@postgres:5432/DB` (same dedicated `postgres` service only; USER/DB
+  `[a-z_][a-z0-9_]{0,62}`, not reserved; no whitespace/control; password without `@ / ? #`). Never echoed.
+- When set, `validate`/`start` (every later start/recreate) pass one extra `-f <owned temp>/db.override.yml`
+  (temp dir 0700, removed on exit) that sets only `api.environment.DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"`;
+  the value is passed to Compose via the process env, never written to disk. Combined with the CA override.
+- `POSTGRES_DB`/`DATABASE_URL`, images, PG init settings, volumes and services are NOT changed; the helper
+  never rewrites them. `bootstrap` refuses while it is set (new empty DB only). `stop`/`status`/`load` ignore it.

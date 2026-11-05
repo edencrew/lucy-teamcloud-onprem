@@ -200,6 +200,49 @@ grep -q '^-p devora -f .*compose.docker.yml config -q$' "$CLOG" || fail "compose
 grep -q 'compose' "$LOG" && fail "runtime compose must not be used when DEVORA_COMPOSE_BINARY is set"
 pass "compose provider"
 
+# Optional adopted DB (DEVORA_API_DATABASE_URL): absent keeps legacy argv; present adds one api-only
+# override on validate/start (also later restarts), DSN passed by env only, never on disk/stderr.
+cp "$ENV" "$ENV.pre-db"
+cat > "$WORK/fake-compose-db" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CLOG"
+prev=""; for a in "\$@"; do [ "\$prev" = -f ] && case "\$a" in */db.override.yml) cp "\$a" "$WORK/db.override.captured" ;; esac; prev="\$a"; done
+printf '%s\n' "\${DEVORA_API_DATABASE_URL:-UNSET}" > "$WORK/db.env.captured"
+EOF
+chmod +x "$WORK/fake-compose-db"
+dbrun() { DEVORA_COMPOSE_BINARY="$WORK/fake-compose-db" run "$1"; }
+: > "$CLOG"; touch "$WORK/vol_exists"
+dbrun start || { cat "$WORK/err" >&2; fail "legacy start without adopted DB"; }
+grep -q 'db.override' "$CLOG" && fail "absent DEVORA_API_DATABASE_URL must not add override"
+grep -qx UNSET "$WORK/db.env.captured" || fail "absent DEVORA_API_DATABASE_URL must not be exported"
+printf 'DEVORA_API_DATABASE_URL=postgresql://devora:Sekr3tPw@postgres:5432/devora_restored\n' >> "$ENV"; chmod 600 "$ENV"
+for a in validate start start; do
+  : > "$CLOG"; rm -f "$WORK/db.override.captured"
+  dbrun "$a" || { cat "$WORK/err" >&2; fail "adopted DB $a"; }
+  grep -v 'db.override.yml' "$CLOG" | grep -q . && fail "every $a compose call must carry the DB override"
+  grep -qx 'postgresql://devora:Sekr3tPw@postgres:5432/devora_restored' "$WORK/db.env.captured" || fail "adopted DSN not passed by env ($a)"
+  grep -qx '      DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"' "$WORK/db.override.captured" || fail "override must interpolate DSN ($a)"
+  grep -qF Sekr3tPw "$WORK/db.override.captured" && fail "override must not contain the DSN ($a)"
+  grep -q 'image\|postgres:\|POSTGRES_DB\|volumes' "$WORK/db.override.captured" && fail "override must be api DATABASE_URL only ($a)"
+  grep -qF Sekr3tPw "$WORK/err" && fail "DSN leaked to stderr ($a)"
+done
+[ "$(grep -E '^(POSTGRES_DB|DATABASE_URL)=' "$ENV")" = "$(grep -E '^(POSTGRES_DB|DATABASE_URL)=' "$ENV.pre-db")" ] \
+  || fail "env POSTGRES_DB/DATABASE_URL must stay unchanged"
+: > "$CLOG"; dbrun stop || fail "stop with adopted DB"; grep -q 'db.override' "$CLOG" && fail "stop must not need override"
+: > "$CLOG"; dbrun bootstrap && fail "bootstrap must refuse adopted DB"
+[ -s "$CLOG" ] && fail "refused bootstrap must not reach compose"
+rm "$WORK/vol_exists"
+for bad in 'postgresql://devora:pw@tc-db:5432/x' 'postgresql://devora:pw@postgres:5433/x' 'postgresql://devora@postgres:5432/x' \
+            'postgresql://devora:pw@postgres:5432/template1' 'postgresql://devora:pw@postgres:5432/Bad-Db' 'mysql://a:b@postgres:5432/x' \
+            'postgresql://devora:p w@postgres:5432/x'; do
+  grep -v '^DEVORA_API_DATABASE_URL=' "$ENV.pre-db" > "$ENV"; printf 'DEVORA_API_DATABASE_URL=%s\n' "$bad" >> "$ENV"; chmod 600 "$ENV"
+  : > "$CLOG"; dbrun validate && fail "invalid adopted DSN must fail: $bad"
+  [ -s "$CLOG" ] && fail "invalid adopted DSN must fail before compose: $bad"
+  grep -qF ':pw@' "$WORK/err" && fail "adopted DSN echoed: $bad"
+done
+cp "$ENV.pre-db" "$ENV"; chmod 600 "$ENV"
+pass "optional adopted DB override (api-only, legacy default unchanged)"
+
 # ---------- Docker 29 load preflight (pure mock image store; no real load/save/tag) ----------
 # Fake Docker 29: advertises/accepts --platform, runtime .Id is an index digest != saved config digest.
 # Store entry per ref: "<config hex|FAIL> <runtime id hex>"; FAIL = ref exists but save fails.

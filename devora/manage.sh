@@ -247,7 +247,7 @@ prepare_ca() {
   [ -d "$t" ] && [ ! -L "$t" ] && [ "$(cd -P "$t" 2>/dev/null && pwd)" = "$t" ] \
     || die "CA override temp dir is not a plain directory (retained: $t)"
   CA_TMP="$t"; CA_TMP_ROOT="$root"
-  trap cleanup_ca EXIT
+  trap cleanup_all EXIT
   cat > "$CA_TMP/ca.override.yml" <<EOF
 services:
   api:
@@ -265,15 +265,81 @@ EOF
   log "using DEVORA_CA_BUNDLE_FILE (read-only, SSL_CERT_FILE=$CA_TARGET)"
 }
 
+# Optional DEVORA_API_DATABASE_URL: adopted (e.g. restored) DB on the SAME dedicated postgres service.
+# When set, validate/start add an ephemeral override that sets ONLY api.environment.DATABASE_URL by
+# interpolation (the DSN is passed via the process env, never written to disk). POSTGRES_DB/DATABASE_URL
+# in the env file, images, PG init settings and volumes are unchanged. Refused for bootstrap (new DB only).
+DB_ARGS=()
+DB_TMP=""
+DB_TMP_ROOT=""
+cleanup_db() {
+  local t="$DB_TMP" f
+  [ -n "$t" ] && [ -n "$DB_TMP_ROOT" ] || return 0
+  DB_TMP=""
+  f="$t/db.override.yml"
+  case "$t" in "$DB_TMP_ROOT"/devora-db.*) ;; *) log "DB override temp dir retained (unexpected path): $t"; return 0 ;; esac
+  case "${t#"$DB_TMP_ROOT"/devora-db.}" in ''|*/*) log "DB override temp dir retained (unexpected path): $t"; return 0 ;; esac
+  if [ ! -d "$t" ] || [ -L "$t" ] || [ "$(cd -P "$t" 2>/dev/null && pwd)" != "$t" ] \
+     || [ "$(ls -A -- "$t" 2>/dev/null)" != db.override.yml ] || [ ! -f "$f" ] || [ -L "$f" ]; then
+    log "DB override temp dir retained (unexpected contents): $t"; return 0
+  fi
+  rm -f -- "$f" && rmdir -- "$t" 2>/dev/null || log "DB override temp dir retained (cleanup failed): $t"
+  return 0
+}
+cleanup_all() { cleanup_ca; cleanup_db; }
+validate_api_db() {
+  local v rest cred u p d
+  v="$(env_get DEVORA_API_DATABASE_URL)"
+  [ -n "$v" ] || return 0
+  # Never echo the value (it carries the password).
+  printf '%s' "$v" | LC_ALL=C grep -q '[[:cntrl:][:space:]]' && die "DEVORA_API_DATABASE_URL contains whitespace/control characters"
+  case "$v" in *CHANGE_ME*|*changeme*|*'<'*'>'*) die "placeholder value: DEVORA_API_DATABASE_URL" ;; esac
+  case "$v" in postgresql://*) ;; *) die "DEVORA_API_DATABASE_URL must be postgresql://USER:PASSWORD@postgres:5432/DB" ;; esac
+  rest="${v#postgresql://}"; cred="${rest%@postgres:5432/*}"; d="${rest##*@postgres:5432/}"
+  [ "$cred@postgres:5432/$d" = "$rest" ] || die "DEVORA_API_DATABASE_URL must target the dedicated postgres:5432 service"
+  u="${cred%%:*}"; p="${cred#*:}"
+  [ "$u:$p" = "$cred" ] && [ -n "$p" ] || die "DEVORA_API_DATABASE_URL must carry USER:PASSWORD"
+  case "$p" in *@*|*/*|*'?'*|*'#'*) die "DEVORA_API_DATABASE_URL password has unsupported characters" ;; esac
+  for v in "$u" "$d"; do
+    printf '%s' "$v" | LC_ALL=C grep -Eqx '[a-z_][a-z0-9_]{0,62}' \
+      || die "DEVORA_API_DATABASE_URL user/DB must match [a-z_][a-z0-9_]{0,62}"
+    case "$v" in postgres|template0|template1|pg_*) die "DEVORA_API_DATABASE_URL uses a reserved PostgreSQL name" ;; esac
+  done
+}
+prepare_api_db() {
+  [ -n "$(env_get DEVORA_API_DATABASE_URL)" ] || return 0
+  [ "$ACTION" = bootstrap ] && die "DEVORA_API_DATABASE_URL is set: bootstrap is for a NEW EMPTY DB only (unset it, or use start)"
+  local root t
+  root="$(cd -P "${TMPDIR:-/tmp}" 2>/dev/null && pwd)" || die "temp directory unusable"
+  t="$(mktemp -d "$root/devora-db.XXXXXX")" || die "could not create DB override temp dir"
+  case "$t" in "$root"/devora-db.*) ;; *) die "unexpected DB override temp dir" ;; esac
+  case "${t#"$root"/devora-db.}" in ''|*/*) die "unexpected DB override temp dir" ;; esac
+  [ -d "$t" ] && [ ! -L "$t" ] && [ "$(cd -P "$t" 2>/dev/null && pwd)" = "$t" ] \
+    || die "DB override temp dir is not a plain directory (retained: $t)"
+  DB_TMP="$t"; DB_TMP_ROOT="$root"
+  trap cleanup_all EXIT
+  cat > "$DB_TMP/db.override.yml" <<'EOF'
+services:
+  api:
+    environment:
+      DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"
+EOF
+  DB_ARGS=(-f "$DB_TMP/db.override.yml")
+  log "using DEVORA_API_DATABASE_URL for api only (postgres service/POSTGRES_DB unchanged)"
+}
+
 # Compose provider: the installer exports DEVORA_COMPOSE_BINARY (its standalone Compose CLI; for
 # Podman the caller also exports DOCKER_HOST for the Podman socket). Otherwise `<rt> compose`.
 # Python podman-compose is never required.
 compose() {
   if [ -n "${DEVORA_COMPOSE_BINARY:-}" ]; then
     [ -x "$DEVORA_COMPOSE_BINARY" ] || die "DEVORA_COMPOSE_BINARY is not executable"
-    set -- "$DEVORA_COMPOSE_BINARY" -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} "$@"
+    set -- "$DEVORA_COMPOSE_BINARY" -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${DB_ARGS[@]+"${DB_ARGS[@]}"} "$@"
   else
-    set -- "$RUNTIME" compose -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} "$@"
+    set -- "$RUNTIME" compose -p "$PROJECT" -f "$COMPOSE_FILE" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${DB_ARGS[@]+"${DB_ARGS[@]}"} "$@"
+  fi
+  if [ ${#DB_ARGS[@]} -gt 0 ]; then
+    set -- env DEVORA_API_DATABASE_URL="$(env_get DEVORA_API_DATABASE_URL)" "$@"
   fi
   DEVORA_ENV_FILE="$ENV_FILE" DEVORA_MEDIA_DIR="$MEDIA" \
   DEVORA_BE_IMAGE="$(env_get DEVORA_BE_IMAGE)" API_BIND="$(env_get API_BIND)" API_PORT="$(env_get API_PORT)" \
@@ -349,9 +415,10 @@ do_bootstrap() {
 }
 
 validate_env
+validate_api_db
 detect_plat
 validate_media
-case "$ACTION" in validate|bootstrap|start) prepare_ca ;; esac
+case "$ACTION" in validate|bootstrap|start) prepare_ca; prepare_api_db ;; esac
 case "$ACTION" in
   validate) compose config -q; log "validate ok" ;;
   load)
