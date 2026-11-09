@@ -483,7 +483,8 @@ TUI 대신 명령을 직접 실행하는 별도의 신규 설치 방법입니다
 - 서버: Docker Engine(로컬 `unix://`), Compose v2(`up --pull`, `pull --ignore-buildable` 지원),
   `sha256sum`/`tar`, 번들과 같은 플랫폼(`linux/amd64`).
 - 운영 입력: 정당한 운영 `license.json`, 접속·계정 정보, 운영 CA/인증서(선택).
-- 범위: 특정 고객·OS 지원을 보장하지 않습니다. 실제 Linux 신규 설치·로그인·재시작은 **미검증**입니다.
+- 범위: 특정 고객·OS 지원을 보장하지 않습니다. 실제 서버에서 확인한 범위는 [10장](#10-테스트-현황)에 있으며,
+  브라우저·외부 클라이언트·MQTT·Studio 업로드와 고객 환경은 **미검증**입니다.
 
 ### 4.1 설치 루트와 공통 명령 prefix
 
@@ -641,10 +642,14 @@ PUBLIC_BROKER_WS_URL=wss://teamcloud.example.com:9443/mqtt
 
 ### 4.4 license 배치
 
-실행 위치: 설치 서버, `INSTALL_ROOT`.
+실행 위치: 설치 서버, `INSTALL_ROOT`. 원본 라이선스 파일은 0600 그대로 두고, 설치 루트의 복사본만
+0644로 만듭니다. `tc-be`는 설치 계정이 아닌 이미지의 비루트 사용자(실측 UID 1001)로 실행되므로 0600
+복사본을 읽지 못합니다. TUI 설치기도 같은 경로에 0644로 복사합니다. `chmod 777`·`chown`은 하지 않습니다.
 
 ```bash
-cp /path/to/license.json license/license.json
+cp /path/to/license.json license/license.json &&
+chmod 0644 license/license.json &&
+ls -l license/license.json
 ```
 
 라이선스가 없거나 잘못되면 `tc-be`가 시작 중 종료합니다. 발급·갱신 문의: `support@edencrew.com`.
@@ -719,8 +724,15 @@ cp /path/to/license.json license/license.json
 - 상시 9개가 `Up`이고 `db`, `auth-be`, `tc-be`, `studio-dl`은 `(healthy)`인지 확인합니다.
   healthcheck가 끝날 때까지 1~2분 걸릴 수 있습니다. 배포 파일 권한 오류는
   [9장 `postgres/initdb` Permission denied](#postgresinitdb-permission-denied)를 참고합니다.
-- 이 문서와 `tests/test-manual-install-docs.sh`의 검증은 정적 + Compose `config` 수준이며, 실제
-  Linux 신규 설치·로그인·재시작 인수를 대신하지 않습니다.
+- `auth-be`/`tc-be` 로그에 `/app/logs/<서비스>.log` open `EACCES`가, `git` 첫 기동 로그에 `EACCES`가
+  몇 번 남을 수 있습니다. 실제 시험에서 설치기(TUI) 설치와 이 수동 설치 모두 같은 디렉터리 권한
+  (`auth/logs`·`tc/logs`·`git/data` root 소유 0755)에서 같은 메시지가 관찰됐고, 인증·API·조직 생성과
+  재기동에는 영향이 없었습니다. 애플리케이션 로그는 `"${TC[@]}" logs`로 봅니다. 파일 로그를 위해
+  `chmod 777`·`chown`을 하지 않습니다.
+- 첫 초기화 직후 `/api/v1/me`의 `gitReady`가 `false`로 보일 수 있습니다. 실제 시험에서는 이후 확인에서
+  `true`였습니다.
+- `tests/test-manual-install-docs.sh`의 검증은 정적 + Compose `config` 수준입니다. 실제 서버에서 확인한
+  범위는 [10장](#10-테스트-현황)을 봅니다.
 - 브라우저에서 `EXTERNAL_URL`에 접속해 관리자 계정으로 로그인합니다. 자체 서명 인증서면
   브라우저 경고가 나옵니다. 실제 클라이언트의 `/mqtt` 연결과 메시지 송수신도 따로 확인합니다
   ([3.12](#312-설치-후-확인과-주의사항)의 설치 후 확인 표와 같은 기준).
@@ -752,10 +764,11 @@ cp /path/to/license.json license/license.json
 
 ### 5.1 license 갱신
 
-새 `license.json`을 `license/license.json`에 덮어쓴 뒤 `tc-be`만 재시작합니다.
+새 `license.json`을 `license/license.json`에 덮어쓰고 mode를 0644로 맞춘 뒤(4.4와 같은 이유) `tc-be`만 재시작합니다.
 
 ```bash
-cp /path/to/new-license.json license/license.json
+cp /path/to/new-license.json license/license.json &&
+chmod 0644 license/license.json &&
 "${TC[@]}" restart tc-be
 ```
 
@@ -1093,11 +1106,18 @@ v0.0.22 설치기는 Go 테스트, 정적 빌드, Compose 설정 해석, 화면 
 수동 TC 설치의 `tests/test-manual-install-docs.sh`는 `HOST_COMPOSE`로 지정한 독립 Compose client로
 실제 이 문서의 `# manual-prefix` 블록을 추출·실행합니다. 추적 파일의 현재 working tree 사본 두 개에서
 프로젝트·바인드 경로·볼륨·네트워크·포트·DB 이름의 격리, HTTP override, 초기화/상시 서비스 분리를
-`config`로 검사합니다. 정적 운영 규칙과 다섯 문서 변형의 실패도 검사합니다. Docker 데몬이나
+`config`로 검사합니다. 정적 운영 규칙(license 복사본 0644 포함)과 여섯 문서 변형의 실패도 검사합니다. Docker 데몬이나
 레지스트리에는 접속하지 않으며, 컨테이너 실행·권한·실제 Linux 설치·TLS·로그인·재기동은 증명하지 않습니다.
 
-실제 Rocky Linux 9 서버에서 설치를 끝내고 TLS 신뢰, 브라우저 로그인, MQTT 메시지 송수신,
-Studio 업로드까지 확인한 것은 아닙니다. rootless 포트와 바인드 마운트 권한,
+수동 TC 설치(4장)는 2026-11-09 Rocky Linux 9.8 x86_64 / Docker 29.3.1 / Compose 5.7.0(rootful) 시험
+서버에서 1회 실제로 확인했습니다. installer 없이 당시 문서에 4.4의 license 0644 단계(현재 문서에 반영)를
+더해 신규 설치했고, `-k` 없는 TLS 검증, 실제 OIDC 로그인, 첫 조직 생성, 기본값이 아닌 DB 이름, 정지 후
+재기동 시 같은 시크릿·인증서·조직과 새 로그인을 확인했습니다. 이미지는 같은 서버에 이미 불러온 동일 이미지
+ID를 써서 불러오기 단계를 생략했습니다. 확인은 서버 내부에서만 했으며 브라우저 로그인, 외부 클라이언트,
+MQTT 메시지 송수신, Studio 업로드, 업데이트·백업·복구는 확인하지 않았습니다.
+
+TUI 설치를 포함한 이 문서 전체에 대해 브라우저 로그인, MQTT 메시지 송수신, Studio 업로드까지 확인한 것은
+아닙니다. rootless 포트와 바인드 마운트 권한,
 SELinux, 방화벽, 인증서와 NAT·DNS 경로는 설치할 서버에서 따로 점검해야 합니다.
 설치기가 이 설정을 대신 바꾸지는 않습니다.
 

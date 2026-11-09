@@ -162,6 +162,14 @@ def static_rules(text):
     # Section 6 edits image tags of the installed compose.docker.yml in place, so it must be backed up.
     require('compose.docker.yml' in args, 'installed compose.docker.yml missing from backup')
     require('.env' not in args, 'obsolete .env backup input')
+    # tc-be runs as a non-root image user (observed UID 1001); a copied 0600 licence is unreadable.
+    # The accepted installer copies it as 0644, so every manual licence copy must do the same.
+    for wanted in ('4.4', '5.1'):
+        copies = [body for section, lang, body in blocks(text)
+                  if section == wanted and lang == 'bash' and 'license/license.json' in body]
+        require(len(copies) == 1, 'expected one licence copy block in ' + wanted)
+        require(re.search(r'^cp \S+ license/license\.json &&\nchmod 0644 license/license\.json( &&)?$',
+                          copies[0], flags=re.M) is not None, 'licence copy not made readable (0644) in ' + wanted)
     return prefix, regen
 
 
@@ -468,6 +476,10 @@ def mutations(text):
     changed = re.sub(r'^test -f secrets/secrets.env.*\n', '', after, count=1, flags=re.M)
     require(changed != after, 'guard mutation not applied')
     variants.append(('no-secret-guard', before + changed))
+    changed = text.replace('cp /path/to/license.json license/license.json &&\nchmod 0644 license/license.json &&\n',
+                           'cp /path/to/license.json license/license.json &&\n', 1)
+    require(changed != text, 'licence mutation not applied')
+    variants.append(('no-licence-mode', changed))
     return variants
 
 
@@ -483,7 +495,7 @@ try:
             print('negative control rejected:', label, '-', error, flush=True)
         else:
             raise AssertionError('negative control unexpectedly PASSED: ' + label)
-    print('All five negative controls rejected; no daemon, init, build, pull or service execution.', flush=True)
+    print('All six negative controls rejected; no daemon, init, build, pull or service execution.', flush=True)
 except Exception:
     traceback.print_exc()
     sys.exit(1)
