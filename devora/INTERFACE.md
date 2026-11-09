@@ -58,8 +58,22 @@ Image refs are never synthesized: the BE ref comes from the env, pgvector/redis 
 contract refs (`pgvector/pgvector:pg16`, `redis/redis-stack-server:7.4.0-v3`; Podman uses the
 `docker.io/…` canonical form). Podman short-ref aliasing is only allowed for an explicit required
 inventory ref with the same config ID as the archive; never guess a repo or overwrite a different ID.
-External LLM + embedding only (no model images/weights). Model/embedding addresses and model IDs are
-independent inputs; the embedding dimension is 1024.
+External LLM + embedding only (no model images/weights). Model IDs are independent inputs; the
+embedding dimension is 1024. Embedding addresses depend on `EMBEDDING_BACKEND` (validated by
+`manage.sh`, fail closed on any other value):
+- `openai`: chat and embeddings share the single `LITELLM_BASE_URL` + `LITELLM_MASTER_KEY`;
+  `EMBEDDING_MODEL` is required; `OLLAMA_BASE_URL` may be absent/empty (an optional background
+  warmup may warn). Never set a fake Ollama endpoint to pass validation.
+- `ollama`: a real `OLLAMA_BASE_URL` is required (LiteLLM fields are still required for chat).
+The helper does not probe the network or the vector dimension; a real 1024-dim embedding startup
+probe against the configured endpoint remains a pending runtime proof (Responses-only endpoints are
+incompatible).
+
+DB identity: `POSTGRES_USER`/`POSTGRES_DB` (installer `dv_db_user`/`dv_db_name`, default `devora`)
+must be lowercase `[a-z_][a-z0-9_]{0,62}` and not `postgres`/`template0`/`template1`/`pg_*`;
+`DATABASE_URL` must equal `postgresql://POSTGRES_USER:POSTGRES_PASSWORD@postgres:5432/POSTGRES_DB`.
+`manage.sh` refuses violations before any runtime call without echoing values. Applied on first
+install only; existing volumes are never renamed or reinitialised.
 
 ## Installer selection and install steps
 Selection is explicit: `--devora-env PATH --devora-media PATH` (both or neither; default OFF).
@@ -114,3 +128,13 @@ Exit 0 = success; non-zero with `devora: ERROR: …` on stderr. Env values are n
   Certificate cryptography/expiry is NOT validated. The body is never logged.
 - `SSL_CERT_FILE` replaces the default pool: the bundle must contain approved private roots AND the
   public roots needed for HTTPS LLM/OIDC endpoints. The installer does not copy or create this file.
+
+## Optional adopted API database (`DEVORA_API_DATABASE_URL`)
+- Optional env key; empty/absent leaves argv and Compose config unchanged (legacy default).
+- Format `postgresql://USER:PASSWORD@postgres:5432/DB` (same dedicated `postgres` service only; USER/DB
+  `[a-z_][a-z0-9_]{0,62}`, not reserved; no whitespace/control; password without `@ / ? #`). Never echoed.
+- When set, `validate`/`start` (every later start/recreate) pass one extra `-f <owned temp>/db.override.yml`
+  (temp dir 0700, removed on exit) that sets only `api.environment.DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"`;
+  the value is passed to Compose via the process env, never written to disk. Combined with the CA override.
+- `POSTGRES_DB`/`DATABASE_URL`, images, PG init settings, volumes and services are NOT changed; the helper
+  never rewrites them. `bootstrap` refuses while it is set (new empty DB only). `stop`/`status`/`load` ignore it.

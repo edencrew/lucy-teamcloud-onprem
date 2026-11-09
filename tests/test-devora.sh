@@ -89,6 +89,7 @@ sed -e "s|^DEVORA_BE_IMAGE=.*|DEVORA_BE_IMAGE=reg.local/devora-be:e196ad2|" \
     -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=pw|" \
     -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://devora:pw@postgres:5432/devora|" \
     -e "s|^OIDC_JWKS_URI=.*|OIDC_JWKS_URI=https://idp.local/jwks|" \
+    -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=openai|" \
     -e "s|=CHANGE_ME$|=set|" "$D/.env.example" > "$ENV"
 chmod 600 "$ENV"
 
@@ -127,6 +128,53 @@ mut CORS_MODE web; run validate && fail "web CORS without origins must fail"
 cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
 pass "env rejection"
 
+# DB identifiers: nondefault user/DB with the matching DSN pass; invalid/reserved are refused before any
+# runtime call, and neither the identifier nor the password is echoed.
+dbenv() { sed -e "s|^POSTGRES_USER=.*|POSTGRES_USER=$1|" -e "s|^POSTGRES_DB=.*|POSTGRES_DB=$2|" \
+  -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=Sekr3tPw|" \
+  -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://$1:Sekr3tPw@postgres:5432/$2|" "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; }
+: > "$LOG"; dbenv dv_app dv_main; run validate || { cat "$WORK/err" >&2; fail "nondefault user/DB with matching DSN"; }
+grep -q 'config -q' "$LOG" || fail "nondefault user/DB must reach compose config"
+dbenv dv_app dv_main; sed -i.x "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://dv_app:Sekr3tPw@postgres:5432/devora|" "$ENV"
+rm -f "$ENV.x"; chmod 600 "$ENV"; run validate && fail "DSN DB mismatch must fail"
+for bad in Dv_app 1abc 'dv-app' postgres pg_monitor template0 template1 "a$(printf 'b%.0s' $(seq 1 63))"; do
+  for which in user db; do
+    if [ "$which" = user ]; then dbenv "$bad" dv_main; else dbenv dv_app "$bad"; fi
+    : > "$LOG"; run validate && fail "invalid/reserved $which '$bad' must fail"
+    [ -s "$LOG" ] && fail "invalid $which '$bad' must fail before any runtime call"
+    grep -q 'POSTGRES_USER\|POSTGRES_DB' "$WORK/err" || fail "invalid $which '$bad' error message"
+    grep -qF 'Sekr3tPw' "$WORK/err" && fail "password leaked in identifier error"
+    [ "$bad" != postgres ] && grep -qF -- "$bad" "$WORK/err" && fail "identifier value echoed"
+  done
+done
+cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
+pass "devora DB identifier contract"
+
+# Conditional embedding contract (mocked; no network, no dimension probe).
+grep -q '^OLLAMA_BASE_URL=$' "$ENV.bak" || fail "fixture must have empty OLLAMA_BASE_URL"
+run validate || { cat "$WORK/err" >&2; fail "openai without OLLAMA_BASE_URL must validate"; }
+grep -v '^OLLAMA_BASE_URL=' "$ENV.bak" > "$ENV"; chmod 600 "$ENV"
+run validate || { cat "$WORK/err" >&2; fail "openai with OLLAMA_BASE_URL absent must validate"; }
+mut LITELLM_BASE_URL ''; run validate && fail "openai without LITELLM_BASE_URL must fail"
+mut LITELLM_MASTER_KEY ''; run validate && fail "openai without LITELLM_MASTER_KEY must fail"
+mut EMBEDDING_MODEL ''; run validate && fail "openai without EMBEDDING_MODEL must fail"
+mut EMBEDDING_BACKEND ollama; run validate && fail "ollama without OLLAMA_BASE_URL must fail"
+grep -q 'requires OLLAMA_BASE_URL' "$WORK/err" || fail "ollama-without-url error message"
+sed -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=ollama|" -e "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=CHANGE_ME|" \
+  "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; run validate && fail "ollama placeholder OLLAMA_BASE_URL must fail"
+sed -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=ollama|" -e "s|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://ollama.local:11434|" \
+  "$ENV.bak" > "$ENV"; chmod 600 "$ENV"; run validate || { cat "$WORK/err" >&2; fail "ollama with OLLAMA_BASE_URL must validate"; }
+for b in set huggingface OpenAI; do
+  mut EMBEDDING_BACKEND "$b"; run validate && fail "unknown backend $b must fail"
+  grep -q 'EMBEDDING_BACKEND must be openai or ollama' "$WORK/err" || fail "unknown backend $b error message"
+done
+mut AUTH_MODE off; run validate && fail "openai path must keep AUTH_MODE enforce guard"
+mut ORG_SCOPE_ENABLED 0; run validate && fail "openai path must keep ORG_SCOPE guard"
+mut PLAN_LOCK_ENABLED false; run validate && fail "openai path must keep PLAN_LOCK guard"
+mut OIDC_ISSUER ''; run validate && fail "openai path must keep OIDC guard"
+cp "$ENV.bak" "$ENV"; chmod 600 "$ENV"; run validate || fail "restored env must validate"
+pass "conditional embedding backend contract"
+
 echo tampered >> "$M/images/devora-images.tar"; run validate && fail "checksum mismatch must fail"
 pass "media checksum"
 
@@ -151,6 +199,49 @@ DEVORA_COMPOSE_BINARY="$WORK/fake-compose" run validate || { cat "$WORK/err" >&2
 grep -q '^-p devora -f .*compose.docker.yml config -q$' "$CLOG" || fail "compose provider argv"
 grep -q 'compose' "$LOG" && fail "runtime compose must not be used when DEVORA_COMPOSE_BINARY is set"
 pass "compose provider"
+
+# Optional adopted DB (DEVORA_API_DATABASE_URL): absent keeps legacy argv; present adds one api-only
+# override on validate/start (also later restarts), DSN passed by env only, never on disk/stderr.
+cp "$ENV" "$ENV.pre-db"
+cat > "$WORK/fake-compose-db" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$CLOG"
+prev=""; for a in "\$@"; do [ "\$prev" = -f ] && case "\$a" in */db.override.yml) cp "\$a" "$WORK/db.override.captured" ;; esac; prev="\$a"; done
+printf '%s\n' "\${DEVORA_API_DATABASE_URL:-UNSET}" > "$WORK/db.env.captured"
+EOF
+chmod +x "$WORK/fake-compose-db"
+dbrun() { DEVORA_COMPOSE_BINARY="$WORK/fake-compose-db" run "$1"; }
+: > "$CLOG"; touch "$WORK/vol_exists"
+dbrun start || { cat "$WORK/err" >&2; fail "legacy start without adopted DB"; }
+grep -q 'db.override' "$CLOG" && fail "absent DEVORA_API_DATABASE_URL must not add override"
+grep -qx UNSET "$WORK/db.env.captured" || fail "absent DEVORA_API_DATABASE_URL must not be exported"
+printf 'DEVORA_API_DATABASE_URL=postgresql://devora:Sekr3tPw@postgres:5432/devora_restored\n' >> "$ENV"; chmod 600 "$ENV"
+for a in validate start start; do
+  : > "$CLOG"; rm -f "$WORK/db.override.captured"
+  dbrun "$a" || { cat "$WORK/err" >&2; fail "adopted DB $a"; }
+  grep -v 'db.override.yml' "$CLOG" | grep -q . && fail "every $a compose call must carry the DB override"
+  grep -qx 'postgresql://devora:Sekr3tPw@postgres:5432/devora_restored' "$WORK/db.env.captured" || fail "adopted DSN not passed by env ($a)"
+  grep -qx '      DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"' "$WORK/db.override.captured" || fail "override must interpolate DSN ($a)"
+  grep -qF Sekr3tPw "$WORK/db.override.captured" && fail "override must not contain the DSN ($a)"
+  grep -q 'image\|postgres:\|POSTGRES_DB\|volumes' "$WORK/db.override.captured" && fail "override must be api DATABASE_URL only ($a)"
+  grep -qF Sekr3tPw "$WORK/err" && fail "DSN leaked to stderr ($a)"
+done
+[ "$(grep -E '^(POSTGRES_DB|DATABASE_URL)=' "$ENV")" = "$(grep -E '^(POSTGRES_DB|DATABASE_URL)=' "$ENV.pre-db")" ] \
+  || fail "env POSTGRES_DB/DATABASE_URL must stay unchanged"
+: > "$CLOG"; dbrun stop || fail "stop with adopted DB"; grep -q 'db.override' "$CLOG" && fail "stop must not need override"
+: > "$CLOG"; dbrun bootstrap && fail "bootstrap must refuse adopted DB"
+[ -s "$CLOG" ] && fail "refused bootstrap must not reach compose"
+rm "$WORK/vol_exists"
+for bad in 'postgresql://devora:pw@tc-db:5432/x' 'postgresql://devora:pw@postgres:5433/x' 'postgresql://devora@postgres:5432/x' \
+            'postgresql://devora:pw@postgres:5432/template1' 'postgresql://devora:pw@postgres:5432/Bad-Db' 'mysql://a:b@postgres:5432/x' \
+            'postgresql://devora:p w@postgres:5432/x'; do
+  grep -v '^DEVORA_API_DATABASE_URL=' "$ENV.pre-db" > "$ENV"; printf 'DEVORA_API_DATABASE_URL=%s\n' "$bad" >> "$ENV"; chmod 600 "$ENV"
+  : > "$CLOG"; dbrun validate && fail "invalid adopted DSN must fail: $bad"
+  [ -s "$CLOG" ] && fail "invalid adopted DSN must fail before compose: $bad"
+  grep -qF ':pw@' "$WORK/err" && fail "adopted DSN echoed: $bad"
+done
+cp "$ENV.pre-db" "$ENV"; chmod 600 "$ENV"
+pass "optional adopted DB override (api-only, legacy default unchanged)"
 
 # ---------- Docker 29 load preflight (pure mock image store; no real load/save/tag) ----------
 # Fake Docker 29: advertises/accepts --platform, runtime .Id is an index digest != saved config digest.

@@ -26,6 +26,8 @@ prev=""
 for a in "\$@"; do
   [ "\$prev" = -f ] && case "\$a" in */ca.override.yml) cp "\$a" "$WORK/override.captured"
     [ -z "\${TC_EXTRA:-}" ] || : > "\${a%/*}/extra" ;; esac
+  [ "\$prev" = -f ] && case "\$a" in */db.override.yml) cp "\$a" "$WORK/dboverride.captured"
+    [ "\${DEVORA_API_DATABASE_URL:-}" = "\${TC_DSN:-}" ] && : > "$WORK/dsn.ok" ;; esac
   prev="\$a"
 done
 case "\$*" in
@@ -55,11 +57,12 @@ sed -e "s|^DEVORA_BE_IMAGE=.*|DEVORA_BE_IMAGE=reg.local/devora-be:e196ad2|" \
     -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=pw|" \
     -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://devora:pw@postgres:5432/devora|" \
     -e "s|^OIDC_JWKS_URI=.*|OIDC_JWKS_URI=https://idp.local/jwks|" \
+    -e "s|^EMBEDDING_BACKEND=.*|EMBEDDING_BACKEND=openai|" \
     -e "s|=CHANGE_ME$|=set|" "$D/.env.example" > "$ENV.base"
 grep -qx 'DEVORA_CA_BUNDLE_FILE=' "$ENV.base" || fail ".env.example must ship DEVORA_CA_BUNDLE_FILE empty"
 setca() { grep -v '^DEVORA_CA_BUNDLE_FILE=' "$ENV.base" > "$ENV"; [ $# -eq 0 ] || printf 'DEVORA_CA_BUNDLE_FILE=%s\n' "$1" >> "$ENV"; chmod 600 "$ENV"; }
 # Mock volume state: bootstrap needs a new empty DB (no volumes); every other action sees existing volumes.
-run() { : > "$LOG"; rm -f "$WORK/override.captured"
+run() { : > "$LOG"; rm -f "$WORK/override.captured" "$WORK/dboverride.captured" "$WORK/dsn.ok"
   if [ "$1" = bootstrap ]; then rm -f "$WORK/volumes.present"; else : > "$WORK/volumes.present"; fi
   PATH="$WORK/bin:$PATH" bash "$D/manage.sh" docker "$1" --env-file "$ENV" --media-dir "$M" >/dev/null 2>"$WORK/err"; }
 
@@ -114,6 +117,27 @@ grep -q 'retained' "$WORK/err" || fail "retained temp dir must be reported"
 run stop; grep -q 'ca.override' "$LOG" && fail "stop must not use override"
 run status; grep -q 'ca.override' "$LOG" && fail "status must not use override"
 pass "valid CA: one ro,z bind + SSL_CERT_FILE on api only, cleaned up"
+
+# ---------- valid CA + DEVORA_API_DATABASE_URL together: start/start ----------
+export TC_DSN='postgresql://devora:Sekr3tPw@postgres:5432/devora_restored'
+setca "$CA"; grep -v '^DEVORA_API_DATABASE_URL=' "$ENV" > "$ENV.db"
+printf 'DEVORA_API_DATABASE_URL=%s\n' "$TC_DSN" >> "$ENV.db"; mv "$ENV.db" "$ENV"; chmod 600 "$ENV"
+pgbefore="$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|DATABASE_URL)=' "$ENV")"
+for i in 1 2; do
+  run start || { cat "$WORK/err" >&2; fail "CA+DB start $i"; }
+  [ -f "$WORK/override.captured" ] && [ -f "$WORK/dboverride.captured" ] || fail "CA+DB start $i: both overrides required"
+  grep 'ca.override' "$LOG" | grep -q 'db.override' || fail "CA+DB start $i: CA and DB override argv together"
+  grep -v 'ca.override' "$LOG" | grep -q '^compose ' && fail "CA+DB start $i: every compose call must carry CA override"
+  [ -f "$WORK/dsn.ok" ] || fail "CA+DB start $i: DSN must reach compose via env"
+  [ "$(cat "$WORK/override.captured")" = "$expected" ] || fail "CA+DB start $i: CA override content"
+  grep -q 'DATABASE_URL: "${DEVORA_API_DATABASE_URL:?}"' "$WORK/dboverride.captured" || fail "CA+DB start $i: DB override content"
+  grep -q 'Sekr3tPw' "$WORK/override.captured" "$WORK/dboverride.captured" "$LOG" "$WORK/err" && fail "CA+DB start $i: secret leaked"
+  grep -qE 'postgres:|POSTGRES|initdb' "$WORK/dboverride.captured" && fail "CA+DB start $i: DB override touches PG init"
+  [ "$(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|DATABASE_URL)=' "$ENV")" = "$pgbefore" ] || fail "PG init fields changed"
+done
+[ -f "$CA" ] || fail "certificate source must never be deleted (CA+DB)"
+unset TC_DSN
+pass "valid CA + DEVORA_API_DATABASE_URL survive start/start, secret absent"
 
 # ---------- rejects ----------
 reject() { setca "$1"; run validate && fail "must reject: $2"; grep -q 'DEVORA_CA_BUNDLE_FILE' "$WORK/err" || fail "reject message: $2"; }

@@ -74,6 +74,7 @@ services:
       # stock s6 openssh setup 의 host key root chown 을 데이터 소유자 key 에 한해 건너뛰는 래퍼 opt-in(Podman 전용)
       - TC_GITEA_SSH_KEY_OWNER=data
       - TZ=${TZ:-UTC}
+      - GITEA__database__NAME=${GITEA_DB_NAME:-git}
       - GITEA__database__USER=${DB_USERNAME}
       - GITEA__database__PASSWD=${DB_PASSWORD}
       - GITEA__server__DISABLE_SSH=true
@@ -102,6 +103,9 @@ services:
       - POSTGRES_PASSWORD=${DB_ROOT_PASSWORD}
       - DB_USERNAME=${DB_USERNAME}
       - DB_PASSWORD=${DB_PASSWORD}
+      - TC_DB_NAME=${TC_DB_NAME:-lucy_teamcloud}
+      - AUTH_DB_NAME=${AUTH_DB_NAME:-lucy_auth}
+      - GITEA_DB_NAME=${GITEA_DB_NAME:-git}
       - TZ=${TZ:-UTC}
     networks:
       - internal-network
@@ -149,8 +153,8 @@ services:
       DB_PORT: 5432
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
-      DB_DATABASE: lucy_auth
-      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_auth"
+      DB_DATABASE: ${AUTH_DB_NAME:-lucy_auth}
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${AUTH_DB_NAME:-lucy_auth}"
       ADMIN_EMAIL: ${LUCY_ADMIN_EMAIL}
       ADMIN_PASSWORD: ${LUCY_ADMIN_PASSWORD}
       ADMIN_NAME: ${LUCY_ADMIN_NAME}
@@ -199,8 +203,8 @@ services:
       DB_PORT: 5432
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
-      DB_DATABASE: lucy_teamcloud
-      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/lucy_teamcloud"
+      DB_DATABASE: ${TC_DB_NAME:-lucy_teamcloud}
+      DATABASE_URL: "postgresql://${DB_USERNAME}:${DB_PASSWORD}@db:5432/${TC_DB_NAME:-lucy_teamcloud}"
       GIT_PROVIDER: gitea
       GIT_HOST: http://git:18080
       GIT_USERNAME: ${LUCY_ADMIN_NAME}
