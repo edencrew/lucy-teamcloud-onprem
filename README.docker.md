@@ -23,8 +23,8 @@
   경우도 이 문서를 따릅니다. 별도 DMZ MQTT 프록시 서버는 [dmz/README.md](dmz/README.md)를 봅니다.
 - 다루는 것: 신규 설치(TUI 또는 수동 중 하나), 수동 설치의 이미지 버전 업데이트·운영·백업, 문제 해결.
 - 이 안내서는 `linux/amd64` 설치 기준입니다. 실제 서버 동작은 별도 확인이 필요합니다
-  ([10장](#10-테스트-현황)). 소스 Compose 템플릿은 `compose.docker.yml` 하나이며 10개 서비스
-  (일회성 `init-secrets` + 상시 9개)로 구성됩니다.
+  ([10장](#10-테스트-현황)). 상시 9개 서비스는 `compose.docker.yml`에 있고, 일회성 `init-secrets`는
+  최초 초기화 전용 `compose.docker.init-secrets.yml`에 따로 있습니다.
 
 명령 블록마다 실행 위치를 적었습니다. 서버 명령은 모두 설치에 쓸 같은 OS 계정으로 실행합니다.
 이 계정은 `docker` 명령을 쓸 수 있어야 합니다(`docker info`가 성공).
@@ -73,8 +73,8 @@ docker compose pull --help | grep -q -- '--ignore-buildable' && echo "pull --ign
 ```
 
 rootless Docker: 일반 계정의 rootless 데몬은 기본적으로 1024 미만 포트(80/443)를 publish하지
-못합니다. 수동 설치라면 4.3대로 `gw`를 높은 호스트 포트(예: 8080/8443)로 바꾸고 `.env` URL도 같은 포트로
-맞춥니다. TUI는 1024 미만 포트를 받지 않습니다. 낮은 포트가 꼭 필요하면 호스트 설정 변경은 서버 관리자가
+못합니다. 수동 설치라면 4.3대로 `user.env`의 `TC_HTTP_PORT`/`TC_HTTPS_PORT`를 높은 포트(예: 8080/8443)로
+정하고 URL도 같은 포트로 맞춥니다. TUI는 1024 미만 포트를 받지 않습니다. 낮은 포트가 꼭 필요하면 호스트 설정 변경은 서버 관리자가
 결정합니다. 이 문서 때문에 docker 컨텍스트를 바꾸거나 `sudo`로 rootful 데몬을 쓰지 않습니다.
 
 ### 2.3 미리 정할 값
@@ -97,7 +97,7 @@ rootless Docker: 일반 계정의 rootless 데몬은 기본적으로 1024 미만
 | 용도 | 새 서버의 새 설치 경로에 처음 설치 | 처음 설치(온라인 또는 폐쇄망) |
 | 이미지 준비 | 서버가 인터넷에 연결되어 있어도 항상 번들 불러오기 | 온라인 이미지 다운로드/빌드 또는 번들 불러오기 |
 | 서버에 필요한 것 | Docker Engine, 같은 릴리스 소스, 번들, 라이선스. Compose 플러그인·Go·Python 설치 불필요 | Docker Engine, Compose v2 플러그인, 소스 사본, 라이선스, (폐쇄망) 번들 |
-| 운영 기준 파일 | 설치 경로의 생성 `compose.installer.json` | 설치 루트의 `compose.docker.yml` |
+| 운영 기준 파일 | 설치 경로의 생성 `compose.installer.json` | 설치 루트의 `compose.docker.yml`, `customer.override.yml`, `user.env`([4.1](#41-설치-루트와-공통-명령-prefix)의 prefix) |
 | 이후 업데이트 | 지원하지 않음. 생성 JSON 기준의 별도 계획을 서버 소유자 승인으로 세움 | [6장](#6-이미지-버전-업데이트)의 이미지 전용 업데이트 |
 | 웹·MQTT 분리 포트 | 지원하지 않음 | 지원 |
 
@@ -471,23 +471,68 @@ TUI 성공과 `/health` 200 응답은 기동을 확인한 결과입니다. 실�
 ## 4. 수동 설치
 
 TUI 대신 명령을 직접 실행하는 별도의 신규 설치 방법입니다. TUI로 설치했다면 이 장을 실행하지
-않습니다. 기존 설치를 업데이트할 때도 이 장을 건너뜁니다. `.env`, 라이선스, 시크릿, 인증서를 다시
+않습니다. 기존 설치를 업데이트할 때도 이 장을 건너뜁니다. `user.env`, 라이선스, 시크릿, 인증서를 다시
 만들지 않습니다.
 
-### 4.1 설치 루트
+### 4.0 사전 조건 (수동 설치)
 
-릴리스 소스 사본을 둘 절대 경로를 정합니다. 수동 설치에서는 이 소스 사본이 곧 설치 루트입니다.
-이 문서에서는 `/opt/lucy-teamcloud-onprem`을 예로 씁니다. 이후 서버 명령은 모두 이 디렉터리에서
-실행합니다.
+- 소스: 승인된 정확한 리비전의 전체 소스 스냅샷(태그면 `git rev-parse HEAD`로 commit 기록). 최신 `main` 금지.
+  Git clone은 Docker Engine·오프라인 이미지 번들·라이선스를 주지 않습니다.
+- 이미지: 승인된 소스 스냅샷의 TC 이미지 참조를 사용합니다. 릴리스 식별자를 모르면
+  추측하지 말고 릴리스 담당자에게 받습니다.
+- 서버: Docker Engine(로컬 `unix://`), Compose v2(`up --pull`, `pull --ignore-buildable` 지원),
+  `sha256sum`/`tar`, 번들과 같은 플랫폼(`linux/amd64`).
+- 운영 입력: 정당한 운영 `license.json`, 접속·계정 정보, 운영 CA/인증서(선택).
+- 범위: 특정 고객·OS 지원을 보장하지 않습니다. 실제 Linux 신규 설치·로그인·재시작은 **미검증**입니다.
 
-실행 위치: 설치 서버. 새 셸을 열 때마다 다시 이동합니다.
+### 4.1 설치 루트와 공통 명령 prefix
+
+새 빈 경로 `INSTALL_ROOT`에 전체 소스 스냅샷을 풉니다. 배포된 파일(`compose.docker*.yml`, `nginx/`,
+`postgres/initdb`, `git/`, `broker/`, `auth/`, `tc/`, `studio-dl/`, `init-secrets/`, `scripts/`)은
+수정하지 않습니다. 고객 파일은 `user.env`(0600)와 `customer.override.yml` 두 개만 만들고, 생성물은
+`secrets/`, `nginx/certs/`, 데이터 디렉터리입니다. 서비스가 읽는 스크립트·설정 바인드는 모두 이
+스냅샷 안의 상대 경로이므로 `--project-directory "$INSTALL_ROOT"`가 반드시 필요합니다.
+
+실행 위치: 설치 서버. 압축 해제와 서비스용 디렉터리는 `umask 0022`로 만듭니다(운영자 `umask 077`이면
+`postgres/initdb`·스크립트가 0700/0600이 되어 컨테이너가 읽지 못합니다).
+
+아래 `INSTALL_ROOT=`와 `TC_PROJECT=` 두 줄은 운영자가 실제 설치 값으로 바꾸는 줄입니다.
 
 ```bash
-INSTALL_ROOT=/opt/lucy-teamcloud-onprem   # 실제 경로로 바꾸세요
-cd "$INSTALL_ROOT" && ls compose.docker.yml .env.example scripts/load-compose-images-docker.sh
+# manual-prefix
+umask 0022
+INSTALL_ROOT=/opt/lucy-teamcloud-onprem          # 새 빈 경로, 실제 값으로
+TC_PROJECT=lucy-teamcloud-onprem                 # 서버에서 유일한 프로젝트 이름
+TC=(docker compose
+    --project-name "$TC_PROJECT"
+    --project-directory "$INSTALL_ROOT"
+    --env-file "$INSTALL_ROOT/user.env"
+    -f "$INSTALL_ROOT/compose.docker.yml" -f "$INSTALL_ROOT/customer.override.yml")
+TC_INIT=(docker compose
+    --project-name "$TC_PROJECT"
+    --project-directory "$INSTALL_ROOT"
+    --env-file "$INSTALL_ROOT/user.env"
+    -f "$INSTALL_ROOT/compose.docker.yml" -f "$INSTALL_ROOT/compose.docker.init-secrets.yml"
+    -f "$INSTALL_ROOT/customer.override.yml")
+cd "$INSTALL_ROOT" && ls compose.docker.yml compose.docker.init-secrets.yml .env.example scripts/load-compose-images-docker.sh
 ```
 
-`ls`가 세 파일을 모두 보여야 올바른 위치입니다. 폐쇄망이면 번들 세 파일을
+새 셸마다 이 블록을 다시 실행합니다. 일반 기동·운영은 `"${TC[@]}"`를 쓰고,
+최초 초기화는 4.5 또는 4.6, 계획된 자체 서명 인증서 재생성은 5.3을 따릅니다.
+배포 파일 순서와 고객 override가 마지막인 순서를 유지합니다.
+
+권한(bootstrap 전에): 서비스가 읽는 배포 파일은 디렉터리 0755/파일 0644(스크립트 0755)여야 합니다.
+`umask 077`로 이미 풀었다면 해당 경로만 고칩니다. `chmod 777`·전체 `chown`·UID 추측은 하지 않습니다.
+
+```bash
+cd "$INSTALL_ROOT" &&
+chmod 0755 postgres/initdb git broker auth tc studio-dl nginx &&
+find postgres/initdb -type f -exec chmod 0644 {} + &&
+chmod 0755 git/gitea-entrypoint.sh auth/auth-entrypoint.sh tc/tc-entrypoint.sh &&
+chmod 0644 git/app.ini broker/mosquitto.conf studio-dl/nginx.conf nginx/nginx.conf nginx/nginx.http.conf
+```
+
+`ls`가 네 파일을 모두 보여야 올바른 위치입니다. 폐쇄망이면 번들 세 파일을
 `$INSTALL_ROOT/images/`에 둡니다. `images/`는 git에서 제외되므로 직접 만듭니다. `<BUNDLE_DIR>`은
 전달받은 세 파일이 있는 디렉터리입니다. `cp -n`은 같은 이름의 기존 파일을 덮어쓰지 않습니다.
 
@@ -499,14 +544,16 @@ cp -n "<BUNDLE_DIR>/lucy-teamcloud-onprem-docker-images-linux-amd64.tar.gz" \
 ls -l images/
 ```
 
-### 4.2 `.env` 만들기
+### 4.2 `user.env` 만들기
 
-실행 위치: 설치 서버, `INSTALL_ROOT`. `.env`가 이미 있으면 덮어쓰지 않도록 `-n`을 씁니다.
+실행 위치: 설치 서버, `INSTALL_ROOT`. 이미 있으면 덮어쓰지 않습니다. 0600으로 만들고 내용을 출력하지 않습니다.
 
 ```bash
-cp -n .env.example .env
-vi .env
+test ! -e user.env && (umask 077 && cp .env.example user.env) && chmod 0600 user.env
+vi user.env
 ```
+
+`user.env`는 호스트의 Compose client 실행 계정만 읽습니다. 포트는 `TC_HTTP_PORT`/`TC_HTTPS_PORT`로 정합니다.
 
 | 변수 | 정할 값 |
 |------|---------|
@@ -516,39 +563,47 @@ vi .env
 | `LUCY_ADMIN_EMAIL`, `LUCY_ADMIN_PASSWORD` | 관리자 계정. 최초 기동 때만 적용 |
 | `LUCY_ADMIN_NAME` | `admin` 그대로 둡니다 |
 | `DB_ROOT_PASSWORD`, `DB_USERNAME`, `DB_PASSWORD` | DB 계정. 최초 기동 때만 적용 |
+| `TC_DB_NAME`, `AUTH_DB_NAME`, `GITEA_DB_NAME` | 서로 다른 신규 설치 DB 이름. 최초 기동 뒤 변경하지 않음 |
+| `TC_HTTP_PORT`, `TC_HTTPS_PORT` | 서로 다른 호스트 포트. URL도 함께 맞춤 |
 | `TZ` | 예: `Asia/Seoul` |
 | `HOST_UID`, `HOST_GID` | Gitea 컨테이너 사용자 UID/GID(기본 1000). 보통 설치 계정의 `id -u`, `id -g` |
 
 주의:
 
 - `DB_PASSWORD`는 `DATABASE_URL=postgresql://<user>:<password>@db:5432/...`에 URI encoding 없이
-  그대로 들어갑니다. `@ : / ? # %` 같은 문자가 있으면 연결 주소가 깨집니다. `.env`에서 따옴표로
+  그대로 들어갑니다. `@ : / ? # %` 같은 문자가 있으면 연결 주소가 깨집니다. `user.env`에서 따옴표로
   감싸도 URI encoding이 되지 않으므로 `[A-Za-z0-9._~-]` 문자만 쓰세요.
 - `HOST_UID`/`HOST_GID`는 Gitea 프로세스의 UID/GID만 정합니다. 다른 서비스의 파일 권한,
   SELinux, 마운트된 디스크의 접근 문제를 해결하지 않습니다.
-- 관리자·DB 값은 최초 기동 뒤 `.env`에서 바꿔도 기존 DB와 계정에 반영되지 않고 로그인이나
-  DB 연결이 실패할 수 있습니다. `.env`만 고치는 것은 비밀번호 변경이 아닙니다. 바꿔야 하면 해당
+- 관리자·DB 값은 최초 기동 뒤 `user.env`에서 바꿔도 기존 DB와 계정에 반영되지 않고 로그인이나
+  DB 연결이 실패할 수 있습니다. `user.env`만 고치는 것은 비밀번호 변경이 아닙니다. 바꿔야 하면 해당
   서비스가 지원하는 방법으로 서버 관리자 승인 아래 진행하고, 일상적인 계정 변경을 위해 데이터를
   지우거나 재설치하지 않습니다.
 
 ### 4.3 호스트 포트와 URL
 
-기본 `compose.docker.yml`은 게이트웨이를 호스트 `80`, `443`으로 publish합니다. 다른 포트를 쓰려면
-최초 기동 전에 `compose.docker.yml`의 `gw.ports` 왼쪽(호스트 포트)만 바꾸고, `.env`의 URL도
-같은 포트로 맞춥니다. 오른쪽 컨테이너 포트 `:80`, `:443`은 바꾸지 않습니다. `.env`만 바꿔서는
-publish 포트가 바뀌지 않습니다.
+기본 `compose.docker.yml`은 게이트웨이를 `${TC_HTTP_PORT:-80}`, `${TC_HTTPS_PORT:-443}`으로
+publish합니다. YAML은 고치지 않고 `user.env`에 `TC_HTTP_PORT=8080`, `TC_HTTPS_PORT=8443`처럼 쓰고
+URL도 같은 포트로 맞춥니다. 추가 사항이 없으면 `customer.override.yml`은 최소 내용으로 만듭니다.
+
+```bash
+test -e customer.override.yml || printf 'services: {}\n' > customer.override.yml
+```
+
+공개 HTTP(테스트) 모드는 배포 템플릿 `nginx/nginx.http.conf`를 같은 컨테이너 경로에 바인드하는
+override로 고릅니다(같은 target이면 Compose가 대체합니다).
 
 ```yaml
-# compose.docker.yml — 예: 8080/8443을 쓰는 경우
+# customer.override.yml — 공개 HTTP 모드일 때만
+services:
   gw:
-    ports:
-      - "8080:80"
-      - "8443:443"
+    volumes:
+      - ./nginx/nginx.http.conf:/etc/nginx/templates/nginx.conf.template:ro
 ```
 
 아래 `<...>`는 설명용 placeholder이며 실제 파일에는 호스트/domain과 숫자 포트를 넣습니다.
 
-| 구성 | `.env` |
+| 구성 | `user.env` |
 |------|--------|
 | HTTPS, DMZ 프록시 없음 | `EXTERNAL_URL=https://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>`<br>`BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt`<br>`PUBLIC_BROKER_WS_URL=wss://<ONPREM_HOST>:<ONPREM_HTTPS_PORT>/mqtt` |
 | HTTP(테스트), DMZ 프록시 없음 | `EXTERNAL_URL=http://<ONPREM_HOST>:<ONPREM_HTTP_PORT>`<br>`BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt`<br>`PUBLIC_BROKER_WS_URL=ws://<ONPREM_HOST>:<ONPREM_HTTP_PORT>/mqtt` |
@@ -568,10 +623,10 @@ HTTPS 포트 `443`으로 연결합니다. 브로커의 내부 `8080` 포트를 �
 최초 기동 전의 설정 예시이며, 운영 중 변경은 별도 설정 변경 작업으로 계획하세요.
 
 ```yaml
+# customer.override.yml (user.env: TC_HTTP_PORT=8080, TC_HTTPS_PORT=8443)
+services:
   gw:
     ports:
-      - "8080:80"
-      - "8443:443"
       - "9443:443"
 ```
 
@@ -598,18 +653,18 @@ cp /path/to/license.json license/license.json
 
 온라인(4.5)과 폐쇄망(4.6) 중 하나만 실행합니다. 첫 기동에서 `init-secrets`가
 `secrets/secrets.env`와, 없을 때만 자체 서명 `nginx/certs/server.crt`/`server.key`를 만들고
-`Exited (0)`으로 끝납니다. 이미 있는 파일은 건드리지 않으므로 운영 인증서를 미리
-`nginx/certs/`에 넣어 두어도 됩니다.
+종료 코드 0으로 끝납니다. 인증서는 `server.crt`와 `server.key`가 둘 다 있으면 생성을 건너뜁니다.
+운영 인증서를 미리 넣을 때도 두 파일을 함께 `nginx/certs/`에 둡니다.
 
 실행 위치: 설치 서버, `INSTALL_ROOT`. 레지스트리에 접속 가능한 서버에서 필요한 이미지를 받고
 `init-secrets` 이미지를 빌드한 뒤 전체를 시작합니다.
 
-`init-secrets`는 `compose.docker.init-secrets.yml`로 분리되어 있어 최초 설치(또는 `secrets/`·인증서
-누락) 때만 명시적으로 먼저 실행합니다. 업데이트에서는 실행하지 않습니다.
+`init-secrets`는 `compose.docker.init-secrets.yml`로 분리되어 있어 신규 설치 때만 명시적으로 먼저 실행합니다. 업데이트에서는 실행하지 않습니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml -f compose.docker.init-secrets.yml run --rm --build init-secrets
-docker compose --env-file .env -f compose.docker.yml up -d
+"${TC[@]}" config --quiet &&
+"${TC_INIT[@]}" run --rm --build init-secrets &&
+"${TC[@]}" up -d
 ```
 
 ### 4.6 최초 기동: 폐쇄망 서버
@@ -629,12 +684,13 @@ docker compose --env-file .env -f compose.docker.yml up -d
 단계로 가지 말고 원인(파일 누락·손상, Podman용 번들 사용 등)을 해결합니다.
 
 불러오기가 성공한 뒤에만 시작합니다. `--pull never`는 레지스트리 접근을 막고, `--no-build`는 빌드를
-막습니다. 최초 설치(또는 `secrets/`·인증서 누락) 때만 bootstrap 을 먼저 실행하며, 업데이트에서는
+막습니다. 신규 설치 때만 bootstrap 을 먼저 실행하며, 업데이트에서는
 실행하지 않습니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml -f compose.docker.init-secrets.yml run --rm --no-deps init-secrets
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+"${TC[@]}" config --quiet &&
+"${TC_INIT[@]}" run --rm --no-deps init-secrets &&
+"${TC[@]}" up -d --pull never --no-build
 ```
 
 ### 4.7 성공 확인
@@ -642,12 +698,29 @@ docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-bui
 실행 위치: 설치 서버, `INSTALL_ROOT`.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml ps -a
-docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
+"${TC[@]}" ps -a
+"${TC[@]}" logs --tail=100 tc-be
 ```
 
-- `init-secrets`는 `Exited (0)`, 나머지 9개는 `Up`이고 `db`, `auth-be`, `tc-be`, `studio-dl`은
-  `(healthy)`가 정상입니다. healthcheck가 끝날 때까지 1~2분 걸릴 수 있습니다.
+- 4.5/4.6의 초기화 명령 자체가 종료 코드 0이어야 합니다. 실패하면 `up`을 하지 않고 멈춥니다.
+  `run --rm`으로 제거된 컨테이너가 `ps`에 남아 있을 필요는 없습니다. 생성물은 아래 명령으로
+  파일 이름과 mode만 확인하며 내용을 출력하지 않습니다.
+
+  ```bash
+  ls -l secrets/secrets.env nginx/certs/server.crt nginx/certs/server.key
+  ```
+
+- init이 생성한 파일 mode는 `secrets/secrets.env` 0644, `server.crt` 0644, `server.key` 0600입니다.
+  `user.env`는 0600입니다. `secrets/`와 `nginx/certs/`는 소스 스냅샷의 디렉터리를 그대로 쓰며
+  `umask 0022`로 풀었을 때 0755입니다. `secrets/`를 0700으로 바꾸지 마세요(컨테이너가 읽지 못할 수 있음).
+  `git`, `auth-be`, `tc-be`는 `/run/secrets/secrets.env`를 읽고, `auth-be`/`tc-be`와 `gw`는 인증서를 읽습니다.
+  Compose에 실행 `user:` 지정이 없어 이미지의 실제 실행 UID와 읽기 권한은 정적으로 증명되지 않았습니다.
+  실제 서비스 읽기는 실제 기동에서 확인합니다. `chmod 777`·전체 `chown`은 하지 않습니다.
+- 상시 9개가 `Up`이고 `db`, `auth-be`, `tc-be`, `studio-dl`은 `(healthy)`인지 확인합니다.
+  healthcheck가 끝날 때까지 1~2분 걸릴 수 있습니다. 배포 파일 권한 오류는
+  [9장 `postgres/initdb` Permission denied](#postgresinitdb-permission-denied)를 참고합니다.
+- 이 문서와 `tests/test-manual-install-docs.sh`의 검증은 정적 + Compose `config` 수준이며, 실제
+  Linux 신규 설치·로그인·재시작 인수를 대신하지 않습니다.
 - 브라우저에서 `EXTERNAL_URL`에 접속해 관리자 계정으로 로그인합니다. 자체 서명 인증서면
   브라우저 경고가 나옵니다. 실제 클라이언트의 `/mqtt` 연결과 메시지 송수신도 따로 확인합니다
   ([3.12](#312-설치-후-확인과-주의사항)의 설치 후 확인 표와 같은 기준).
@@ -663,17 +736,19 @@ docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
 
 | 작업 | 명령 |
 |------|------|
-| 상태 | `docker compose --env-file .env -f compose.docker.yml ps -a` |
-| 로그 | `docker compose --env-file .env -f compose.docker.yml logs --tail=200 <서비스>` |
-| 서비스 하나 재시작 | `docker compose --env-file .env -f compose.docker.yml restart <서비스>` |
-| 정지(컨테이너 유지) | `docker compose --env-file .env -f compose.docker.yml stop` |
-| 다시 시작 | `docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build` |
-| 컨테이너 제거 | `docker compose --env-file .env -f compose.docker.yml down` (바인드 마운트 데이터와 `studio-release` 볼륨은 남음) |
+| 상태 | `"${TC[@]}" ps -a` |
+| 로그 | `"${TC[@]}" logs --tail=200 <서비스>` |
+| 서비스 하나 재시작 | `"${TC[@]}" restart <서비스>` |
+| 정지(컨테이너 유지) | `"${TC[@]}" stop` |
+| 다시 시작·재생성 | `"${TC[@]}" up -d --pull never --no-build` |
+| 컨테이너 제거 | `"${TC[@]}" down` (바인드 마운트 데이터와 `studio-release` 볼륨은 남음) |
+
+(먼저 [4.1](#41-설치-루트와-공통-명령-prefix)의 prefix 블록을 실행합니다.)
 
 `down -v`는 쓰지 않습니다. `studio-release` 볼륨이 지워져 Studio를 다시 업로드해야 합니다.
 
-`.env` 값을 바꾼 경우 `restart`로는 반영되지 않습니다. 위 "다시 시작" 명령으로 컨테이너를
-다시 만들어야 합니다. 단 관리자·DB 계정 값은 `.env`만으로 바꾸지 않습니다(4.2 참고).
+`user.env` 값을 바꾼 경우 `restart`로는 반영되지 않습니다. 위 "다시 시작" 명령으로 컨테이너를
+다시 만들어야 합니다. 단 관리자·DB 계정 값은 `user.env`만으로 바꾸지 않습니다(4.2 참고).
 
 ### 5.1 license 갱신
 
@@ -681,7 +756,7 @@ docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
 
 ```bash
 cp /path/to/new-license.json license/license.json
-docker compose --env-file .env -f compose.docker.yml restart tc-be
+"${TC[@]}" restart tc-be
 ```
 
 ### 5.2 운영 인증서 교체
@@ -692,14 +767,14 @@ docker compose --env-file .env -f compose.docker.yml restart tc-be
 ```bash
 cp /path/to/server.key nginx/certs/server.key
 cp /path/to/server.crt nginx/certs/server.crt && echo "copied"
-docker compose --env-file .env -f compose.docker.yml restart gw auth-be tc-be
+"${TC[@]}" restart gw auth-be tc-be
 ```
 
 ### 5.3 `EXTERNAL_URL` host를 바꾼 뒤 self-signed 인증서 다시 만들기
 
 `init-secrets`가 만든 자체 서명 인증서이고, 호스트 변경이 계획된 경우에만 씁니다. 운영 인증서
 갱신은 이 절차가 아니라 5.2로 교체합니다. `secrets/secrets.env`는 건드리지 않습니다(이미 있으므로
-`init-secrets`가 그대로 둡니다). `.env`의 URL을 고친 뒤 진행합니다.
+`init-secrets`가 그대로 둡니다). `user.env`의 URL을 고친 뒤 진행합니다.
 
 실행 위치: 설치 서버. 먼저 두 파일이 일반 파일(symlink 아님)인지, 자체 서명인지 확인합니다.
 `subject`와 `issuer`가 같아야 합니다. 하나라도 실패하거나 다르면 멈추고 서버 관리자와 확인합니다.
@@ -711,24 +786,40 @@ test -f nginx/certs/server.key && test ! -L nginx/certs/server.key &&
 openssl x509 -in nginx/certs/server.crt -noout -subject -issuer
 ```
 
-확인되면 두 파일만 새 private 백업 디렉터리로 이동(삭제 아님)하고 다시 만듭니다. `mkdir`은 이미
-있는 디렉터리면 실패하므로 기존 백업을 덮어쓰지 않습니다.
+확인되면 아래 한 블록을 실행합니다. 먼저 기존 `secrets/secrets.env`가 일반 파일·비어 있지 않음·
+symlink 아님을 확인하고 `user.env`, `customer.override.yml`도 확인합니다. 하나라도 실패하면
+인증서를 이동하거나 초기화를 실행하지 않고 멈춥니다. 시크릿이 없으면 새 JWT 키와 시크릿을 생성해
+기존 데이터·세션과 맞지 않게 되므로 백업에서 기존 입력을 복구하기 전에는 진행하지 않습니다.
+두 인증서 파일만 새 private 백업 디렉터리로 이동(삭제 아님)합니다. `mkdir`은 이미 있는
+디렉터리면 실패하므로 기존 백업을 덮어쓰지 않습니다.
 
 ```bash
 cd "$INSTALL_ROOT" &&
+test -f secrets/secrets.env && test -s secrets/secrets.env && test ! -L secrets/secrets.env &&
+test -f user.env && test -f customer.override.yml &&
 CERT_BACKUP="$HOME/teamcloud-cert-backup-$(date +%Y%m%d-%H%M%S)" &&
 umask 077 && mkdir "$CERT_BACKUP" &&
 mv nginx/certs/server.crt nginx/certs/server.key "$CERT_BACKUP/" &&
-docker compose --env-file .env -f compose.docker.yml rm -f init-secrets &&
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build &&
+"${TC_INIT[@]}" \
+  run --rm --no-deps init-secrets &&
 ls -l nginx/certs/server.crt nginx/certs/server.key &&
-docker compose --env-file .env -f compose.docker.yml restart gw auth-be tc-be
+"${TC[@]}" restart gw auth-be tc-be
 ```
+
+`init-secrets`는 `compose.docker.init-secrets.yml`에만 있으므로 base 파일만으로는 실행할 수
+없습니다(`rm`/`up`으로 대신하지 않음). 이미 있는 `secrets/` 파일은 그대로 두고 빠진 인증서·키만
+만듭니다. 이 명령이 0이 아니면 멈춥니다. 일반 업데이트(6장)·재시작·복구(7장)에서는 이 bootstrap
+파일과 `init-secrets`를 다시 실행하지 않습니다.
 
 subject와 issuer 비교만으로 이 인증서의 출처가 증명되는 것은 아닙니다. 기존 설치 기록으로
 init-secrets가 만든 인증서임을 확인해야 합니다. 중간에 실패하면 백업과 실패 산출물을 보존하고
 중단합니다. 새 파일이 일부 만들어졌을 수 있으므로 백업 파일을 무조건 덮어쓰지 말고, 관리자가
-원래 인증서·키 쌍의 복구를 확인한 뒤 4.6의 시작 명령과 `restart gw auth-be tc-be`를 실행합니다.
+원래 인증서·키 쌍과 기존 입력의 복구를 확인한 뒤 일반 기동 명령을 실행합니다.
+
+```bash
+"${TC[@]}" up -d --pull never --no-build
+"${TC[@]}" restart gw auth-be tc-be
+```
 
 ## 6. 이미지 버전 업데이트
 
@@ -748,7 +839,7 @@ init-secrets가 만든 인증서임을 확인해야 합니다. 중간에 실패�
   `init-secrets/Dockerfile`, `init-secrets/docker-entrypoint.sh`, `postgres/initdb/01-create-user.sh`,
   `git/app.ini`, `git/gitea-entrypoint.sh`, `auth/auth-entrypoint.sh`, `tc/tc-entrypoint.sh`,
   `broker/mosquitto.conf`, `scripts/`의 불러오기·이미지 내보내기 스크립트
-- `.env`, 인증서, 시크릿 또는 데이터 이관 필요
+- `user.env`, 인증서, 시크릿 또는 데이터 이관 필요
 
 비교 방법은 릴리스 changelog를 우선 보고, 필요하면 이전 릴리스와 새 릴리스의 깨끗한 소스끼리
 비교합니다(Git이 없는 서버라면 온라인 PC에서). 운영 중인 설치 루트의 `git/`, `auth/`, `broker/`
@@ -763,12 +854,12 @@ diff "$INSTALL_ROOT/compose.docker.yml" "$NEW_SRC/compose.docker.yml"
 ```
 
 `diff`가 아무것도 출력하지 않고 끝나면(종료 코드 0) 같은 파일입니다. 차이가 있으면 종료 코드 1과 함께
-다른 줄을 출력하며, 이 경우 그 줄이 `image:` 태그뿐인지 눈으로 확인합니다. 이전에 바꾼 사용자 지정 포트
-(`ports` 줄) 차이는 예상된 로컬 차이이며 이관 대상이 아닙니다. 2 이상은 파일이 없는 등 비교 실패입니다.
+다른 줄을 출력하며, 이 경우 그 줄이 `image:` 태그뿐인지 눈으로 확인합니다. 고객의 사용자 지정 포트는
+`user.env`와 `customer.override.yml`에서 관리하므로 vendor Compose 비교에 섞지 않습니다. 2 이상은 파일이 없는 등 비교 실패입니다.
 
 통과하면 설치 루트의 `compose.docker.yml`에서 바뀐 `image:` 태그만 편집기로 고칩니다. 새 파일로
-통째로 덮어쓰지 않습니다. `.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`,
-`git/data/`, `broker/`, 사용자 지정 포트는 건드리지 않습니다. 최초 설치용 `cp .env.example .env`를 다시
+통째로 덮어쓰지 않습니다. `user.env`, `license/`, `secrets/`, `nginx/certs/`, `postgres/data/`,
+`git/data/`, `broker/`, 사용자 지정 포트는 건드리지 않습니다. 최초 설치용 `cp .env.example user.env`를 다시
 하지 않습니다. 스택을 미리 내릴 필요가 없습니다.
 
 아래 6.2와 6.3 중 하나만 실행합니다.
@@ -778,14 +869,13 @@ diff "$INSTALL_ROOT/compose.docker.yml" "$NEW_SRC/compose.docker.yml"
 실행 위치: 설치 서버, `INSTALL_ROOT`. 각 명령이 성공했을 때만 다음 명령으로 갑니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml config --quiet
-docker compose --env-file .env -f compose.docker.yml pull --ignore-buildable
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+"${TC[@]}" config --quiet
+"${TC[@]}" pull --ignore-buildable
+"${TC[@]}" up -d --pull never --no-build
 ```
 
 `config --quiet`는 수정한 파일 문법을 확인합니다(출력 없음이 정상). `pull --ignore-buildable`은
-빌드 대상인 `init-secrets`를 제외한 이미지를 받습니다. `up`은 태그가 바뀐 서비스만 다시 만듭니다.
-`init-secrets` 이미지는 다시 빌드하지 않으며, 실행되더라도 기존 시크릿·인증서는 그대로 둡니다.
+상시 서비스 이미지를 받습니다. `up`은 태그가 바뀐 서비스만 다시 만듭니다.
 
 ### 6.3 폐쇄망 서버
 
@@ -794,13 +884,13 @@ docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-bui
 2. 세 파일을 이름 그대로 설치 서버의 `$INSTALL_ROOT/images/`에 복사합니다. 이전 릴리스의 같은
    이름 파일은 새 파일로 교체됩니다.
 3. 실행 위치: 설치 서버, `INSTALL_ROOT`. 불러오기 전에, 수정한 Compose가 가리키는 이미지와 받은
-   `.images.txt`가 같은지 비교합니다. 중복을 제거한 두 목록의 이름·태그가 모두 같아야 합니다.
-   `init-secrets`도 예외가 아니며, 다르면 불러오지 않고 번들을 다시 받습니다. 그 다음 불러오기가 `Load complete.`로
+   `.images.txt`가 같은지 비교합니다. 상시 서비스의 이름·태그가 번들 목록에 모두 있어야 합니다.
+   번들에는 초기화 전용 이미지도 있습니다. 상시 이미지가 누락되거나 태그가 다르면 번들을 다시 받습니다. 그 다음 불러오기가 `Load complete.`로
    끝난 뒤에만 `up`을 실행합니다.
 
 ```bash
 cd "$INSTALL_ROOT" &&
-docker compose --env-file .env -f compose.docker.yml config --images | LC_ALL=C sort -u &&
+"${TC[@]}" config --images | LC_ALL=C sort -u &&
 LC_ALL=C sort -u images/lucy-teamcloud-onprem-docker-images-linux-amd64.images.txt
 ```
 
@@ -809,15 +899,15 @@ LC_ALL=C sort -u images/lucy-teamcloud-onprem-docker-images-linux-amd64.images.t
 ```
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+"${TC[@]}" up -d --pull never --no-build
 ```
 
 ### 6.4 업데이트 확인
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml ps -a
-docker compose --env-file .env -f compose.docker.yml images
-docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
+"${TC[@]}" ps -a
+"${TC[@]}" images
+"${TC[@]}" logs --tail=100 tc-be
 ```
 
 `images` 출력의 태그가 새 릴리스 값이고, 4.7의 상태 기준을 만족하면 완료입니다. 화면이 이전
@@ -835,13 +925,15 @@ docker compose --env-file .env -f compose.docker.yml logs --tail=100 tc-be
 
 | 경로 | 비고 |
 |------|------|
-| `.env`, `license/license.json`, `secrets/secrets.env` | 필수. 시크릿을 잃으면 기존 데이터를 쓸 수 없음 |
+| `user.env`, `license/license.json`, `secrets/secrets.env` | 필수. 시크릿을 잃으면 기존 데이터를 쓸 수 없음 |
 | `postgres/data/`, `git/data/` | 필수 |
-| 운영 Compose: 수동 설치는 `compose.docker.yml`, TUI 설치는 생성된 `compose.installer.json` | 권장(사용자 지정 포트 등). 운영에 실제로 쓰는 Compose를 백업하고, 복원·운영 때도 같은 파일을 씁니다 |
+| 수동 설치 `compose.docker.yml`(6장에서 고친 이미지 태그 포함)과 `customer.override.yml`; TUI 설치는 생성된 `compose.installer.json` | 필수. 운영에 실제로 쓰는 Compose와 고객 설정을 백업하고, 복원·운영 때도 같은 파일을 씁니다 |
 | `nginx/certs/`, 직접 수정한 `nginx/` 설정 | 권장(운영 인증서, 로컬 설정) |
 | `broker/data/`, `broker/logs/`, `auth/logs/`, `tc/logs/` | 선택 |
 | 네임드 볼륨 `studio-release` | 백업 대신 원본 Studio 번들을 보관해 두었다가 다시 업로드 |
 
+수동 설치의 승인된 소스 스냅샷 식별자(리비전·릴리스)도 기록해 두고 복구 시 같은 스냅샷을
+준비합니다. 6장으로 이미지 태그를 고친 `compose.docker.yml`은 스냅샷 원본이 아니라 백업본을 씁니다.
 아래 명령은 수동 YAML 설치용입니다. TUI 설치는 같은 원칙(정지 후 복사, 설치 루트 밖 접근이 제한된 경로,
 실패 시 중단)으로 설치 경로와 생성 JSON을 써서 별도로 계획합니다.
 
@@ -868,15 +960,15 @@ test ! -e "$BACKUP_FILE" && echo "backup target OK: $BACKUP_FILE"
 
 ```bash
 cd "$INSTALL_ROOT" &&
-docker compose --env-file .env -f compose.docker.yml stop &&
-tar -czf "$BACKUP_FILE" .env compose.docker.yml license/license.json secrets nginx/certs postgres/data git/data broker/data &&
+"${TC[@]}" stop &&
+tar -czf "$BACKUP_FILE" user.env customer.override.yml compose.docker.yml license/license.json secrets nginx/certs postgres/data git/data broker/data &&
 tar -tzf "$BACKUP_FILE" >/dev/null && echo "backup OK: $BACKUP_FILE"
 ```
 
 `backup OK`를 확인한 뒤에만 다시 시작합니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-build
+"${TC[@]}" up -d --pull never --no-build
 ```
 
 실패하면 스택은 멈춘 상태로 남습니다. 그 압축 파일은 불완전하므로 쓰지 않습니다. 원인을 정리하기
@@ -892,13 +984,13 @@ docker compose --env-file .env -f compose.docker.yml up -d --pull never --no-bui
 
 - 대상: 백업을 만든 것과 같은 릴리스(같은 이미지 태그)의 설치 루트. 다른 릴리스로 복원하려면 그
   릴리스 안내가 해당 데이터 버전과의 호환을 명시해야 합니다.
-- 격리: 승인된 대상 설치 루트에서 `docker compose --env-file .env -f compose.docker.yml down`으로
+- 격리: 승인된 대상 설치 루트에서 `"${TC[@]}" down`으로
   스택이 멈춰 있고, 다른 프로세스가 그 데이터 경로를 쓰지 않아야 합니다. 가능하면 운영 루트가 아닌
   별도 경로에 먼저 풀어 내용을 확인합니다.
 - 기존 데이터: `tar -tzf "<백업 파일>"`로 백업에 든 정확한 경로를 확인하고, 대상에 같은 경로가
   있으면 삭제하지 않고 보존합니다. 보존 위치가 이미 존재하는지 먼저 확인하고, 경로를 일괄로
   `mv`/`rm`하지 않습니다.
-- 확인: 복원 후 4.6의 `up -d --pull never --no-build`로 시작하고 4.7로 확인한 뒤 Studio 번들을
+- 확인: 복원 후 5장의 일반 기동 명령 `"${TC[@]}" up -d --pull never --no-build`로 시작하고 4.7로 확인한 뒤 Studio 번들을
   다시 업로드합니다.
 
 ## 8. Offline Image Bundle
@@ -914,9 +1006,9 @@ Docker 이미지 저장소에 등록한 같은 이름·태그의 이미지를 �
 [3.11](#311-실패했을-때)을 봅니다.
 
 ```bash
-docker compose --env-file .env -f compose.docker.yml ps -a
-docker compose --env-file .env -f compose.docker.yml config --quiet
-docker compose --env-file .env -f compose.docker.yml logs --tail=200 "<서비스>"
+"${TC[@]}" ps -a
+"${TC[@]}" config --quiet
+"${TC[@]}" logs --tail=200 "<서비스>"
 ```
 
 | 증상 | 확인 | 조치 |
@@ -925,8 +1017,8 @@ docker compose --env-file .env -f compose.docker.yml logs --tail=200 "<서비스
 | `auth-be`/`tc-be`가 DB 연결 실패 | `logs auth-be tc-be` | `DB_PASSWORD`에 URI 특수문자가 있는지, 최초 기동 뒤 DB 값을 바꿨는지 확인. 바꿨다면 원래 값으로 되돌림 |
 | `Container ...-db-1 Error`만 보임 | `logs --tail=100 db` | 불러오기 실패로 단정하지 말고 DB 로그를 봄 |
 | DB 로그에 `/docker-entrypoint-initdb.d/: Permission denied` | `ls -l postgres/initdb/`, `getenforce`(SELinux 사용 시) | 아래 initdb 항목 |
-| `gw` 시작 실패, `port is already allocated` | `ss -ltnp` 로 호스트 포트 사용 확인 | 다른 포트를 쓰려면 4.3대로 `gw.ports`와 `.env`를 함께 바꾸고 다시 시작 |
-| `gw`가 인증서 파일 오류 | `ls -l nginx/certs/` | `init-secrets` 로그 확인. 운영 인증서면 파일 이름이 `server.crt`/`server.key`인지 확인 |
+| `gw` 시작 실패, `port is already allocated` | `ss -ltnp` 로 호스트 포트 사용 확인 | 다른 포트를 쓰려면 4.3대로 `user.env`의 포트와 URL을 함께 바꾸고 5장의 일반 기동 명령으로 다시 시작 |
+| `gw`가 인증서 파일 오류 | `ls -l nginx/certs/` | 4.7의 생성물과 파일 mode 확인. 운영 인증서면 파일 이름이 `server.crt`/`server.key`인지 확인 |
 | 폐쇄망에서 `pull access denied` 또는 레지스트리 접속 시도 | `docker image ls` | 불러오기가 성공했는지, Compose 태그와 번들이 같은 릴리스인지 확인. 시작 명령에 `--pull never`가 있는지 확인 |
 | 새 버전인데 이전 화면, 로그인 중 `invalid_grant`/`authorization code expired` | — | 브라우저의 Service Worker 등록 해제와 사이트 데이터 삭제(DevTools → Application) |
 | `/studio/*` 404 | `curl -k https://<TC 주소>/studio/latest.json` | 첫 업로드 전이면 정상. [Studio 릴리스 업로드](README.md#studio-릴리스-업로드) |
@@ -971,31 +1063,38 @@ SELinux Enforcing 서버라면 label 변경은 서버 관리자 승인 범위입
 시드 push 만 이 주소를 썼고 사용자 리포(Git Proxy 경유)는 영향이 없다. 현재 패키지는
 `ROOT_URL=http://git:18080/` 이고, tc-be 도 수정판부터는 push 주소를 `GIT_HOST` 로 조립해 설정에 무관하다.
 
-복구 (기존 설치, 1회):
+복구 (기존 수동 설치, 1회): 먼저 4.1의 공통 prefix를 실제 설치 루트와 프로젝트 이름으로 설정합니다.
+아래 명령은 같은 `user.env`, 고객 override와 `--project-directory`를 사용합니다.
 
 ```bash
 # 1. 패키지의 git/gitea-entrypoint.sh 를 현재 버전으로 교체한 뒤 git 재기동 (ROOT_URL 이 app.ini 에 반영된다)
-docker compose --env-file .env -f compose.docker.yml restart git
-docker exec <git 컨테이너> grep ROOT_URL /data/gitea/conf/app.ini    # ROOT_URL = http://git:18080/
+"${TC[@]}" restart git
+"${TC[@]}" exec -T git grep ROOT_URL /data/gitea/conf/app.ini    # ROOT_URL = http://git:18080/
 
-# 2. 이미 저장된 clone 주소 정정 (<DB_USERNAME> 은 .env 의 값)
-docker exec -it <db 컨테이너> psql -U <DB_USERNAME> -d lucy_teamcloud -c \
+# 2. 이미 저장된 clone 주소 정정 (<DB_USERNAME> 은 user.env 의 값)
+"${TC[@]}" exec -T db psql -U "<DB_USERNAME>" -d lucy_teamcloud -c \
   "UPDATE \"ProjectGitRepository\" SET \"cloneUrl\" = regexp_replace(\"cloneUrl\", '^http://git/', 'http://git:18080/') WHERE \"cloneUrl\" LIKE 'http://git/%';"
 
 # 3. tc-be 재기동 → 부팅마다 force push 하므로 자동 복구
-docker compose --env-file .env -f compose.docker.yml restart tc-be
-grep -E 'force-pushed|Failed to seed' tc/logs/tc-be.log
+"${TC[@]}" restart tc-be
+grep -E 'force-pushed|Failed to seed' "$INSTALL_ROOT/tc/logs/tc-be.log"
 ```
 
 참고: 현재 패키지는 `git` 서비스 healthcheck 가 관리자 계정 마커(`git/data/gitea/.admin-created`)까지 확인하므로,
 계정 생성이 실패하면 tc-be 가 기동하지 않고 `dependency failed to start` 로 드러난다. `git` 컨테이너 로그에서
-원인(비밀번호 정책, DB 연결 등)을 확인하고 `up -d` 를 다시 실행하면 된다.
+원인(비밀번호 정책, DB 연결 등)을 확인하고 `"${TC[@]}" up -d --pull never --no-build` 를 다시 실행하면 된다.
 
 ## 10. 테스트 현황
 
 v0.0.22 설치기는 Go 테스트, 정적 빌드, Compose 설정 해석, 화면 미리보기를 확인했습니다.
 공개 배포 파일의 다운로드와 체크섬도 확인했으며 해시는 3.5에 있습니다.
 문서의 명령은 저장소 설정·스크립트와 대조하고 문법을 검사했습니다.
+
+수동 TC 설치의 `tests/test-manual-install-docs.sh`는 `HOST_COMPOSE`로 지정한 독립 Compose client로
+실제 이 문서의 `# manual-prefix` 블록을 추출·실행합니다. 추적 파일의 현재 working tree 사본 두 개에서
+프로젝트·바인드 경로·볼륨·네트워크·포트·DB 이름의 격리, HTTP override, 초기화/상시 서비스 분리를
+`config`로 검사합니다. 정적 운영 규칙과 다섯 문서 변형의 실패도 검사합니다. Docker 데몬이나
+레지스트리에는 접속하지 않으며, 컨테이너 실행·권한·실제 Linux 설치·TLS·로그인·재기동은 증명하지 않습니다.
 
 실제 Rocky Linux 9 서버에서 설치를 끝내고 TLS 신뢰, 브라우저 로그인, MQTT 메시지 송수신,
 Studio 업로드까지 확인한 것은 아닙니다. rootless 포트와 바인드 마운트 권한,
