@@ -443,6 +443,37 @@ publish하면 gateway가 시작되지 않습니다. 운영 port를 바꿀 때는
 
 ## 10. 알려진 문제
 
+### Tutorial 01 이 빈 프로젝트로 클론될 때 (v0.0.16 ~ v0.0.25 로 최초 설치한 환경)
+
+증상: 시스템 프로젝트 `Tutorial 01` 을 Studio 에서 열면 내용이 없다. `tc/logs/tc-be.log` 에
+`Failed to seed project "Tutorial 01": ... Failed to connect to git:80` 이 있다. 같은 부팅의 `GitUserSetup`
+실패(Gitea 401)는 관리자 계정 생성 전에 첫 호출이 나간 1회성 경합으로 자동 재시도되며, 이 문제의 원인이 아니다.
+
+원인: 패키지가 Gitea `HTTP_PORT` 를 18080 으로 바꾸면서 `git/gitea-entrypoint.sh` 의 `ROOT_URL` 에 포트를
+넣지 않아, Gitea 가 돌려준 clone 주소(DB `ProjectGitRepository.cloneUrl`)가 80 포트를 가리켰다. tc-be 의
+시드 push 만 이 주소를 썼고 사용자 리포(Git Proxy 경유)는 영향이 없다. 현재 패키지는
+`ROOT_URL=http://git:18080/` 이고, tc-be 도 수정판부터는 push 주소를 `GIT_HOST` 로 조립해 설정에 무관하다.
+
+복구 (기존 설치, 1회):
+
+```bash
+# 1. 패키지의 git/gitea-entrypoint.sh 를 현재 버전으로 교체한 뒤 git 재기동 (ROOT_URL 이 app.ini 에 반영된다)
+docker compose --env-file .env -f compose.docker.yml restart git
+docker exec <git 컨테이너> grep ROOT_URL /data/gitea/conf/app.ini    # ROOT_URL = http://git:18080/
+
+# 2. 이미 저장된 clone 주소 정정 (<DB_USERNAME> 은 .env 의 값)
+docker exec -it <db 컨테이너> psql -U <DB_USERNAME> -d lucy_teamcloud -c \
+  "UPDATE \"ProjectGitRepository\" SET \"cloneUrl\" = regexp_replace(\"cloneUrl\", '^http://git/', 'http://git:18080/') WHERE \"cloneUrl\" LIKE 'http://git/%';"
+
+# 3. tc-be 재기동 → 부팅마다 force push 하므로 자동 복구
+docker compose --env-file .env -f compose.docker.yml restart tc-be
+grep -E 'force-pushed|Failed to seed' tc/logs/tc-be.log
+```
+
+참고: 현재 패키지는 `git` 서비스 healthcheck 가 관리자 계정 마커(`git/data/gitea/.admin-created`)까지 확인하므로,
+계정 생성이 실패하면 tc-be 가 기동하지 않고 `dependency failed to start` 로 드러난다. `git` 컨테이너 로그에서
+원인(비밀번호 정책, DB 연결 등)을 확인하고 `up -d` 를 다시 실행하면 된다.
+
 ### 이미지 export 중 `unknown flag: --platform` 오류
 
 아래 오류가 나오면 이미지를 만드는 PC의 Docker가 오래된 상태입니다.

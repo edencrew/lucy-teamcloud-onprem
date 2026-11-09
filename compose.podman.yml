@@ -44,6 +44,14 @@ services:
     image: docker.gitea.com/gitea:1.25.3
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
+    # 관리자 계정 마커(.admin-created)까지 확인해, 계정 생성 전에 tc-be 가 Gitea 를 호출하던 첫 부팅 경합을 막는다.
+    # curl 은 Gitea 이미지에 포함. start_period 는 첫 부팅의 DB 마이그레이션 + 계정 생성 시간을 감안한 값.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /data/gitea/.admin-created && curl -fsS http://localhost:18080/api/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -148,6 +156,9 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      # git 의 관리자 계정이 준비된 뒤에 기동 (첫 부팅 Gitea 401 경합 제거)
+      git:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/health"]
