@@ -956,6 +956,50 @@ grep -E 'force-pushed|Failed to seed' tc/logs/tc-be.log
 계정 생성이 실패하면 tc-be 가 기동하지 않고 `dependency failed to start` 로 드러난다. `git` 컨테이너 로그에서
 원인(비밀번호 정책, DB 연결 등)을 확인하고 `up -d` 를 다시 실행하면 된다.
 
+### NAT 뒤에서 `EXTERNAL_URL` 이 공인 IP 일 때 로그인이 500 으로 실패할 때 (NAT 헤어핀)
+
+증상: 로그인 화면을 지나 TC 로 돌아오는 단계에서 `POST /api/v1/auth/callback` 이 500 이고 화면에 토큰 교환 실패가
+보인다. Auth 화면에서 직접 로그인해도 같은 단계에서 실패한다. tc-be 로그에는 `OIDC callback 실패: fetch failed`
+만 남고 원인 코드는 없다.
+
+원인: 이전 이미지의 tc-be 와 auth-be 는 서버간 호출(JWKS, 토큰 교환, refresh, 비밀번호 검증, 메일 발송 등)을
+`AUTH_SERVER_URL`(`${EXTERNAL_URL}/auth`), 즉 공개 주소로 보냈다. 서버가 NAT 뒤에 있고 `EXTERNAL_URL` 이 NAT 의 공인 IP 면
+컨테이너에서 나간 요청이 라우터에서 되돌아와야(헤어핀) 하는데, 이를 지원하지 않는 라우터에서는 연결이 실패한다.
+인증서·시크릿 문제가 아니다.
+
+진단: 먼저 tc-be 기동 로그에서 내부 주소가 적용됐는지 본다. TUI 설치는 3절의 생성 `compose.installer.json`
+호출 형식을 대신 쓴다.
+
+```bash
+podman compose --env-file .env -f compose.podman.yml logs tc-be | grep -E 'Auth server|internal URL'
+```
+
+`Auth server: <공개 주소>` 아래에 `- internal URL : http://auth-be` 가 찍히면 변수가 적용된 것이다. 그 줄 자체가 없으면
+이미지가 변수를 모르는 이전 버전이다. 다음으로 tc-be 컨테이너 안에서 공개 주소와 내부 주소를 비교한다.
+
+```bash
+podman exec <tc-be 컨테이너> node -e \
+  "for (const u of [process.env.AUTH_SERVER_URL, 'http://auth-be']) \
+     fetch(u + '/api/v1/oidc/jwks').then(r => console.log('OK  ', u, r.status)) \
+       .catch(e => console.log('FAIL', u, e.cause?.code, e.cause?.message))"
+```
+
+공개 주소가 `FAIL ... ETIMEDOUT`(환경에 따라 `ECONNREFUSED`·`EHOSTUNREACH`)이고 `http://auth-be` 가 `OK ... 200` 이면 이
+문제다. 둘 다 실패하면 auth-be 자체를 먼저 본다(`logs` 로 auth-be 확인).
+
+해결: 이 릴리스부터 tc-be·auth-be 는 서버간 호출을 `AUTH_INTERNAL_URL`(compose 기본값 `http://auth-be`, 같은 Compose
+네트워크의 서비스명)로 보내므로 헤어핀이 필요 없다. 이미지가 `tc-be onprem-prod-0.0.26`, `auth-be onprem-prod-0.1.3` 이상이어야
+이 변수를 인식하며, 그보다 낮으면 무시하고 예전처럼 공개 주소를 쓴다. `.env` 에 `AUTH_INTERNAL_URL` 을 적을 필요는
+없다(기본값으로 동작). 공개 주소(`AUTH_SERVER_URL`, `OIDC_ISSUER`)는 브라우저 리다이렉트와 토큰 검증에 계속 쓰이므로
+바꾸지 않는다.
+
+기존 설치 갱신: 이 변경은 `image:` 태그 외에 tc-be·auth-be 의 `environment` 도 바꾸므로 6절의 태그 전용 절차 대상이
+아니다. 설치 루트의 `compose.podman.yml`(TUI 설치는 `compose.installer.json`)에서 두 서비스의 `image:` 태그를 위
+버전으로 바꾸고, `AUTH_SERVER_URL` 과 `OIDC_ISSUER` 아래에 각각 `AUTH_INTERNAL_URL: ${AUTH_INTERNAL_URL:-http://auth-be}`
+를 추가한 뒤 이미지를 받아(6.2 또는 6.3) `podman compose --env-file .env -f compose.podman.yml up -d --no-build` 로
+두 서비스를 다시 만든다. `.env`, 시크릿, 인증서, 데이터는 그대로 둔다. 적용 뒤 위 진단의 `internal URL` 줄과 TC·Auth
+화면 로그인으로 확인한다.
+
 ## 9. 테스트 현황
 
 v0.0.22 설치기는 Go 테스트, 정적 빌드, Compose 설정 해석, 화면 미리보기를 확인했습니다.
