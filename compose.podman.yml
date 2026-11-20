@@ -175,7 +175,7 @@ services:
       - internal-network
 
   tc-be:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.26
+    image: public.ecr.aws/edencrew/lucy-teamcloud-be:onprem-prod-0.0.27
     platform: ${TARGET_PLATFORM:-linux/amd64}
     # rootless: 호스트 설치 계정 = 이미지 기본 사용자 appuser(1001:1001). logs/Studio 쓰기는 호스트 계정 소유,
     # 호스트 계정 소유 secret/cert/license 는 1001 로 읽힌다. app/entrypoint.sh 는 root 를 요구하지 않는다.
@@ -237,7 +237,7 @@ services:
       - internal-network
 
   tc-fe:
-    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.18
+    image: public.ecr.aws/edencrew/lucy-teamcloud-fe:onprem-prod-0.0.20
     platform: ${TARGET_PLATFORM:-linux/amd64}
     restart: unless-stopped
     networks:
